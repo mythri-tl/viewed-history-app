@@ -139,6 +139,19 @@ function App() {
       socketInstance.emit('join', currentUser.id);
     });
 
+    socketInstance.on('disconnect', (reason) => {
+      console.warn('[Socket.io] Disconnected from real-time server:', reason);
+    });
+
+    socketInstance.on('reconnect', (attemptNumber) => {
+      console.log('[Socket.io] Reconnected to backend real-time server on attempt', attemptNumber);
+      socketInstance.emit('join', currentUser.id);
+    });
+
+    socketInstance.on('connect_error', (error) => {
+      console.error('[Socket.io] Connection error:', error);
+    });
+
     socketInstance.on('post_created', (newPost) => {
       setPosts(prev => {
         if (prev.some(p => p.id === newPost.id)) return prev;
@@ -148,7 +161,7 @@ function App() {
 
     socketInstance.on('post_liked', ({ postId, likeCount, action }) => {
       setPosts(prev => prev.map(p => {
-        if (p.id === postId) {
+        if (p.id === postId && p.like_count !== likeCount) {
           return { ...p, like_count: likeCount };
         }
         return p;

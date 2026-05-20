@@ -20,6 +20,7 @@ const PostCard = ({
   const [likeCount, setLikeCount] = useState(initialLikeCount);
   const [isLiked, setIsLiked] = useState(false);
   const [isLiking, setIsLiking] = useState(false);
+  const isLikingRef = useRef(false);
   
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState([]);
@@ -60,6 +61,15 @@ const PostCard = ({
     setEditHashtags(hashtags || '');
     setEditImageUrl(image_url || '');
   }
+
+  // Reset image loading state when a new image source arrives
+  useEffect(() => {
+    const resetId = window.requestAnimationFrame(() => {
+      setImageLoading(true);
+      setImageError(false);
+    });
+    return () => window.cancelAnimationFrame(resetId);
+  }, [image_url]);
 
   // Sync like event updates
   useEffect(() => {
@@ -171,7 +181,8 @@ const PostCard = ({
   }, [id, inHistoryView, isEditing, minVisibilityPct, minDurationSeconds]);
 
   const handleLike = async () => {
-    if (isLiking) return;
+    if (isLikingRef.current) return;
+    isLikingRef.current = true;
     setIsLiking(true);
 
     try {
@@ -194,6 +205,7 @@ const PostCard = ({
     } catch (error) {
       console.error("Failed to like post", error);
     } finally {
+      isLikingRef.current = false;
       setIsLiking(false);
     }
   };

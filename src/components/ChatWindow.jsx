@@ -65,15 +65,25 @@ const ChatWindow = ({ connections, currentUser, socket, initialContact }) => {
 
     const handleUserOnline = ({ userId }) => setOnlineUsers(prev => ({ ...prev, [userId]: true }));
     const handleUserOffline = ({ userId }) => setOnlineUsers(prev => ({ ...prev, [userId]: false }));
+    const handleOnlineUsers = (users) => {
+      if (!Array.isArray(users)) return;
+      const onlineMap = {};
+      users.forEach(userId => {
+        onlineMap[userId] = true;
+      });
+      setOnlineUsers(onlineMap);
+    };
 
     socket.on('receive_message', handleReceiveMessage);
     socket.on('user_online', handleUserOnline);
     socket.on('user_offline', handleUserOffline);
+    socket.on('online_users', handleOnlineUsers);
     
     return () => {
       socket.off('receive_message', handleReceiveMessage);
       socket.off('user_online', handleUserOnline);
       socket.off('user_offline', handleUserOffline);
+      socket.off('online_users', handleOnlineUsers);
     };
   }, [socket, activeContact, currentUser]);
 

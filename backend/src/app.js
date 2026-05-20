@@ -29,8 +29,12 @@ const io = new Server(server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST', 'PATCH', 'DELETE']
-  }
+  },
+  pingInterval: 25000,
+  pingTimeout: 5000
 });
+
+const onlineUsers = new Map();
 
 app.set('io', io);
 
@@ -56,12 +60,21 @@ io.on('connection', (socket) => {
   console.log(`[Socket.io] Client connected: ${socket.id}`);
   
   socket.on('join', (userId) => {
-    if (userId) {
-      socket.userId = userId;
-      socket.join(`user_${userId}`);
+    if (!userId) return;
+
+    socket.userId = userId;
+    socket.join(`user_${userId}`);
+
+    const existingSockets = onlineUsers.get(userId) || new Set();
+    const wasOffline = existingSockets.size === 0;
+    existingSockets.add(socket.id);
+    onlineUsers.set(userId, existingSockets);
+
+    socket.emit('online_users', Array.from(onlineUsers.keys()));
+    if (wasOffline) {
       socket.broadcast.emit('user_online', { userId });
-      console.log(`[Socket.io] User ${userId} joined room user_${userId}`);
     }
+    console.log(`[Socket.io] User ${userId} joined room user_${userId} (connections=${existingSockets.size})`);
   });
 
   socket.on('send_message', async ({ senderId, receiverId, message }) => {
@@ -102,9 +115,18 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log(`[Socket.io] Client disconnected: ${socket.id}`);
-    if (socket.userId) {
-      // Notify other clients that this user has disconnected
+    if (!socket.userId) return;
+
+    const sockets = onlineUsers.get(socket.userId);
+    if (!sockets) return;
+
+    sockets.delete(socket.id);
+    if (sockets.size === 0) {
+      onlineUsers.delete(socket.userId);
       socket.broadcast.emit('user_offline', { userId: socket.userId });
+      console.log(`[Socket.io] User ${socket.userId} is now offline`);
+    } else {
+      console.log(`[Socket.io] User ${socket.userId} still has ${sockets.size} active connection(s)`);
     }
   });
 });

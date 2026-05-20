@@ -3,7 +3,7 @@ const path = require('path');
 const PostModel = require('../models/postModel');
 
 // Helper to save base64 string as file and return URL
-function saveBase64Image(base64Str) {
+function saveBase64Image(base64Str, baseUrl) {
   if (!base64Str || !base64Str.startsWith('data:image/')) {
     return base64Str;
   }
@@ -26,7 +26,7 @@ function saveBase64Image(base64Str) {
   const filePath = path.join(uploadsDir, filename);
   fs.writeFileSync(filePath, dataBuffer);
 
-  return `http://localhost:5000/uploads/${filename}`;
+  return `${baseUrl}/uploads/${filename}`;
 }
 
 exports.createPost = async (req, res) => {
@@ -41,7 +41,8 @@ exports.createPost = async (req, res) => {
     // Convert base64 media upload to hosted static asset URL if applicable
     if (imageUrl && imageUrl.startsWith('data:image/')) {
       try {
-        imageUrl = saveBase64Image(imageUrl);
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        imageUrl = saveBase64Image(imageUrl, baseUrl);
       } catch (err) {
         console.error('Failed to save base64 image:', err);
         return res.status(400).json({ message: 'Invalid image upload data format' });
@@ -190,7 +191,8 @@ exports.updatePost = async (req, res) => {
     // Handle native base64 uploaded image if applicable
     if (imageUrl && imageUrl.startsWith('data:image/')) {
       try {
-        imageUrl = saveBase64Image(imageUrl);
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        imageUrl = saveBase64Image(imageUrl, baseUrl);
       } catch (err) {
         console.error('Failed to save base64 image:', err);
         return res.status(400).json({ message: 'Invalid image upload data format' });
