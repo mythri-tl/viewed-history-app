@@ -1,0 +1,51 @@
+export const initialPosts = [
+  {
+    id: 1,
+    authorAvatar: "https://i.pravatar.cc/150?img=11",
+    authorName: "Alex Chen",
+    authorHeadline: "Staff Engineer at TechCorp • TechCorp",
+    viewTime: "Viewed 2h ago",
+    postText: "Just published a deep dive into our migration from microservices back to a modular monolith. Here are the 5 key architectural decisions we made and why...",
+    tags: ["Backend Engineering", "Architecture"],
+    readTime: "8 min read",
+    statusText: "40% read",
+    statusClass: "status-partial",
+    statusIcon: "fa-solid fa-spinner",
+    buttonText: "Continue Reading",
+    buttonClass: "btn-secondary",
+    dateGroup: "Today"
+  },
+  {
+    id: 2,
+    authorAvatar: "https://i.pravatar.cc/150?img=32",
+    authorName: "Elena Rodriguez",
+    authorHeadline: "VP of Product at InnovateAI • InnovateAI",
+    viewTime: "Viewed 5h ago",
+    postText: "The future of AI in SaaS isn't just about chatbots. It's about ambient intelligence—systems that understand context before the user even asks. Here's a look at our new design system...",
+    postImage: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=800&q=80",
+    tags: ["AI/ML", "Product Design"],
+    readTime: "4 min read",
+    statusText: "Viewed Completely",
+    statusClass: "status-complete",
+    statusIcon: "fa-solid fa-circle-check",
+    buttonText: "View Again",
+    buttonClass: "btn-secondary",
+    dateGroup: "Today"
+  },
+  {
+    id: 3,
+    authorAvatar: "https://i.pravatar.cc/150?img=52",
+    authorName: "Marcus Johnson",
+    authorHeadline: "Talent Acquisition Lead • GlobalHire",
+    viewTime: "Viewed Yesterday, 2:30 PM",
+    postText: "I've reviewed over 1,000 resumes this quarter. The biggest mistake senior engineers make? Overcomplicating their impact statements. Here is the framework you should use instead...",
+    tags: ["Resume Optimization", "Career Growth"],
+    readTime: "3 min read",
+    statusText: "Viewed Completely",
+    statusClass: "status-complete",
+    statusIcon: "fa-solid fa-circle-check",
+    buttonText: "View Again",
+    buttonClass: "btn-secondary",
+    dateGroup: "Yesterday"
+  }
+];
