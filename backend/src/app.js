@@ -57,7 +57,9 @@ io.on('connection', (socket) => {
   
   socket.on('join', (userId) => {
     if (userId) {
+      socket.userId = userId;
       socket.join(`user_${userId}`);
+      socket.broadcast.emit('user_online', { userId });
       console.log(`[Socket.io] User ${userId} joined room user_${userId}`);
     }
   });
@@ -100,6 +102,10 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log(`[Socket.io] Client disconnected: ${socket.id}`);
+    if (socket.userId) {
+      // Notify other clients that this user has disconnected
+      socket.broadcast.emit('user_offline', { userId: socket.userId });
+    }
   });
 });
 

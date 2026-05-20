@@ -70,9 +70,10 @@ exports.getFeed = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
     const excludeViewed = req.query.excludeViewed === 'true';
+    const searchQuery = req.query.q || null;
     const userId = req.user ? req.user.id : null;
 
-    const posts = await PostModel.getFeed(limit, offset, excludeViewed ? userId : null);
+    const posts = await PostModel.getFeed(limit, offset, excludeViewed ? userId : null, searchQuery);
     res.status(200).json({ posts, page, limit });
   } catch (error) {
     console.error('Get Feed Error:', error);
@@ -209,5 +210,76 @@ exports.updatePost = async (req, res) => {
   } catch (error) {
     console.error('Update Post Error:', error);
     res.status(500).json({ message: 'Server error while updating post' });
+  }
+};
+
+exports.deletePost = async (req, res) => {
+  try {
+    const postId = req.params.id;
+    const userId = req.user.id;
+    
+    const post = await PostModel.getPostById(postId);
+    if (!post) return res.status(404).json({ message: 'Post not found' });
+    if (post.user_id !== userId) return res.status(403).json({ message: 'Not authorized to delete this post' });
+
+    const deleted = await PostModel.deletePost(postId, userId);
+    if (deleted) {
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('post_deleted', { postId });
+      }
+      res.status(200).json({ message: 'Post deleted successfully', postId });
+    } else {
+      res.status(400).json({ message: 'Failed to delete post' });
+    }
+  } catch (error) {
+    console.error('Delete Post Error:', error);
+    res.status(500).json({ message: 'Server error while deleting post' });
+  }
+};
+
+exports.editComment = async (req, res) => {
+  try {
+    const { commentId } = req.params;
+    const userId = req.user.id;
+    const { content } = req.body;
+
+    if (!content) return res.status(400).json({ message: 'Content is required' });
+
+    const updatedComment = await PostModel.updateComment(commentId, userId, content);
+    if (!updatedComment) return res.status(404).json({ message: 'Comment not found or unauthorized' });
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('comment_updated', { postId: updatedComment.post_id, comment: updatedComment });
+    }
+
+    res.status(200).json({ message: 'Comment updated', comment: updatedComment });
+  } catch (error) {
+    console.error('Edit Comment Error:', error);
+    res.status(500).json({ message: 'Server error while updating comment' });
+  }
+};
+
+exports.deleteComment = async (req, res) => {
+  try {
+    const { commentId } = req.params;
+    const userId = req.user.id;
+
+    const deleted = await PostModel.deleteComment(commentId, userId);
+    if (!deleted) return res.status(404).json({ message: 'Comment not found or unauthorized' });
+
+    // We need the comment count to broadcast
+    const comments = await PostModel.getComments(deleted.post_id);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('comment_deleted', { postId: deleted.post_id, commentId, commentCount: comments.length });
+    }
+
+    res.status(200).json({ message: 'Comment deleted', commentId });
+  } catch (error) {
+    console.error('Delete Comment Error:', error);
+    res.status(500).json({ message: 'Server error while deleting comment' });
   }
 };

@@ -27,6 +27,14 @@ const PostCard = ({
   const [loadingComments, setLoadingComments] = useState(false);
   const [commentCount, setCommentCount] = useState(initialCommentCount);
 
+  // Comments Edit State
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [editingCommentContent, setEditingCommentContent] = useState('');
+
+  // Image Loading State
+  const [imageLoading, setImageLoading] = useState(true);
+  const [imageError, setImageError] = useState(false);
+
   // Edit Mode Local States
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(content);
@@ -176,11 +184,10 @@ const PostCard = ({
       const data = await response.json();
       
       if (response.ok) {
+        setLikeCount(data.likeCount); // Set directly from server response to avoid race condition double counts
         if (data.message.includes('unliked')) {
-          setLikeCount(prev => Math.max(0, prev - 1));
           setIsLiked(false);
         } else if (data.message.includes('liked')) {
-          setLikeCount(prev => prev + 1);
           setIsLiked(true);
         }
       }
@@ -236,6 +243,79 @@ const PostCard = ({
     } catch (err) {
       console.error("Failed to post comment", err);
     }
+  };
+
+  const handleEditCommentSubmit = async (e, commentId) => {
+    e.preventDefault();
+    if (!editingCommentContent.trim()) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/api/posts/${id}/comment/${commentId}`, {
+        method: 'PATCH',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}` 
+        },
+        body: JSON.stringify({ content: editingCommentContent })
+      });
+      const data = await res.json();
+      
+      if (res.ok) {
+        setComments(prev => prev.map(c => c.id === commentId ? { ...c, content: data.comment.content } : c));
+        setEditingCommentId(null);
+      }
+    } catch (err) {
+      console.error("Failed to edit comment", err);
+    }
+  };
+
+  const handleDeleteComment = async (commentId) => {
+    if (!window.confirm("Are you sure you want to delete this comment?")) return;
+    
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/api/posts/${id}/comment/${commentId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (res.ok) {
+        setComments(prev => prev.filter(c => c.id !== commentId));
+        setCommentCount(prev => Math.max(0, prev - 1));
+      }
+    } catch (err) {
+      console.error("Failed to delete comment", err);
+    }
+  };
+
+  const handleDeletePost = async () => {
+    if (!window.confirm("Are you sure you want to delete this post?")) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/api/posts/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (res.ok) {
+        // Will be removed from feed via socket event or parent state update
+        window.dispatchEvent(new CustomEvent('post_deleted', { detail: { postId: id } }));
+      }
+    } catch (err) {
+      console.error("Failed to delete post", err);
+    }
+  };
+
+  const handleShare = () => {
+    const postUrl = `${window.location.origin}/post/${id}`;
+    navigator.clipboard.writeText(postUrl)
+      .then(() => {
+        // Simple toast or alert
+        alert("Link copied to clipboard!");
+      })
+      .catch(err => console.error("Failed to copy link", err));
   };
 
   const handleFileChange = (e) => {
@@ -456,29 +536,54 @@ const PostCard = ({
           </div>
         </div>
         {currentUser && currentUser.id === user_id && (
-          <button 
-            onClick={() => setIsEditing(true)} 
-            style={{ 
-              background: 'transparent', 
-              border: 'none', 
-              color: 'var(--text-muted)', 
-              cursor: 'pointer', 
-              fontSize: '0.85rem', 
-              padding: '6px 12px', 
-              borderRadius: '20px',
-              transition: 'all 0.2s',
-              alignSelf: 'center',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              fontWeight: '600'
-            }}
-            onMouseOver={(e) => { e.currentTarget.style.background = 'rgba(0,0,0,0.05)'; e.currentTarget.style.color = 'var(--primary-blue)'; }}
-            onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
-            title="Edit Post Content and Hashtags"
-          >
-            <i className="fa-solid fa-pen-to-square"></i> Edit
-          </button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button 
+              onClick={() => setIsEditing(true)} 
+              style={{ 
+                background: 'transparent', 
+                border: 'none', 
+                color: 'var(--text-muted)', 
+                cursor: 'pointer', 
+                fontSize: '0.85rem', 
+                padding: '6px 12px', 
+                borderRadius: '20px',
+                transition: 'all 0.2s',
+                alignSelf: 'center',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontWeight: '600'
+              }}
+              onMouseOver={(e) => { e.currentTarget.style.background = 'rgba(0,0,0,0.05)'; e.currentTarget.style.color = 'var(--primary-blue)'; }}
+              onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+              title="Edit Post"
+            >
+              <i className="fa-solid fa-pen-to-square"></i>
+            </button>
+            <button 
+              onClick={handleDeletePost} 
+              style={{ 
+                background: 'transparent', 
+                border: 'none', 
+                color: 'var(--text-muted)', 
+                cursor: 'pointer', 
+                fontSize: '0.85rem', 
+                padding: '6px 12px', 
+                borderRadius: '20px',
+                transition: 'all 0.2s',
+                alignSelf: 'center',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontWeight: '600'
+              }}
+              onMouseOver={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'; e.currentTarget.style.color = '#ef4444'; }}
+              onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+              title="Delete Post"
+            >
+              <i className="fa-solid fa-trash"></i>
+            </button>
+          </div>
         )}
       </div>
       
@@ -487,9 +592,26 @@ const PostCard = ({
         {hashtags && <p style={{ color: 'var(--primary-blue)', marginTop: '8px', fontWeight: '500' }}>{hashtags}</p>}
       </div>
 
-      {image_url && (
-        <div className="post-media" style={{ marginTop: '16px', borderRadius: 'var(--border-radius-md)', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
-          <img src={image_url} alt="Post media" style={{ width: '100%', maxHeight: '400px', objectFit: 'cover', display: 'block' }} />
+      {image_url && !imageError && (
+        <div className="post-media" style={{ marginTop: '16px', borderRadius: 'var(--border-radius-md)', overflow: 'hidden', border: '1px solid var(--border-color)', minHeight: imageLoading ? '300px' : 'auto', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
+          {imageLoading && (
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <i className="fa-solid fa-spinner fa-spin" style={{ color: 'var(--primary-blue)', fontSize: '24px' }}></i>
+            </div>
+          )}
+          <img 
+            src={image_url} 
+            alt="Post media" 
+            onLoad={() => setImageLoading(false)}
+            onError={() => { setImageLoading(false); setImageError(true); }}
+            style={{ width: '100%', maxHeight: '400px', objectFit: 'cover', display: imageLoading ? 'none' : 'block' }} 
+          />
+        </div>
+      )}
+      {imageError && (
+        <div className="post-media" style={{ marginTop: '16px', borderRadius: 'var(--border-radius-md)', border: '1px solid var(--border-color)', minHeight: '150px', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', flexDirection: 'column', gap: '8px' }}>
+          <i className="fa-regular fa-image" style={{ fontSize: '32px' }}></i>
+          <span style={{ fontSize: '0.9rem', fontWeight: '500' }}>Image unavailable</span>
         </div>
       )}
 
@@ -528,6 +650,20 @@ const PostCard = ({
         >
           <i className="fa-regular fa-comment"></i> Comment
         </button>
+        <button 
+          className="action-btn" 
+          onClick={handleShare}
+          style={{ 
+            background: 'transparent', 
+            border: 'none', padding: '8px 24px', borderRadius: '4px', cursor: 'pointer', 
+            display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', 
+            fontWeight: '600', fontSize: '0.9rem' 
+          }}
+          onMouseOver={(e) => e.currentTarget.style.background = 'rgba(0,0,0,0.03)'}
+          onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+        >
+          <i className="fa-solid fa-share-nodes"></i> Share
+        </button>
       </div>
 
       {showComments && (
@@ -550,9 +686,27 @@ const PostCard = ({
               {comments.map(c => (
                 <div key={c.id} className="comment-item" style={{ display: 'flex', gap: '12px' }}>
                   <img src={c.author_image || `https://ui-avatars.com/api/?name=${encodeURIComponent(c.author_name || 'User')}&background=ccc&color=fff`} alt={c.author_name} style={{ width: '36px', height: '36px', borderRadius: '50%' }} />
-                  <div style={{ background: 'white', padding: '10px 14px', borderRadius: '4px 16px 16px 16px', border: '1px solid var(--border-color)', flex: 1 }}>
-                    <div style={{ fontWeight: '600', fontSize: '0.85rem', color: 'var(--text-main)', marginBottom: '4px' }}>{c.author_name}</div>
-                    <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{c.content}</div>
+                  <div style={{ background: 'white', padding: '10px 14px', borderRadius: '4px 16px 16px 16px', border: '1px solid var(--border-color)', flex: 1, position: 'relative' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <div style={{ fontWeight: '600', fontSize: '0.85rem', color: 'var(--text-main)' }}>{c.author_name}</div>
+                      {currentUser && currentUser.id === c.user_id && (
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <button onClick={() => { setEditingCommentId(c.id); setEditingCommentContent(c.content); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }} title="Edit Comment"><i className="fa-solid fa-pen" style={{ fontSize: '0.75rem' }}></i></button>
+                          <button onClick={() => handleDeleteComment(c.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }} title="Delete Comment"><i className="fa-solid fa-trash" style={{ fontSize: '0.75rem' }}></i></button>
+                        </div>
+                      )}
+                    </div>
+                    {editingCommentId === c.id ? (
+                      <form onSubmit={(e) => handleEditCommentSubmit(e, c.id)} style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+                        <input type="text" value={editingCommentContent} onChange={(e) => setEditingCommentContent(e.target.value)} style={{ padding: '6px 10px', borderRadius: '4px', border: '1px solid var(--border-color)', outline: 'none' }} />
+                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                          <button type="button" onClick={() => setEditingCommentId(null)} style={{ background: 'transparent', border: 'none', fontSize: '0.8rem', cursor: 'pointer', color: 'var(--text-muted)' }}>Cancel</button>
+                          <button type="submit" disabled={!editingCommentContent.trim()} style={{ background: 'var(--primary-blue)', color: 'white', border: 'none', borderRadius: '4px', padding: '4px 12px', fontSize: '0.8rem', cursor: 'pointer' }}>Save</button>
+                        </div>
+                      </form>
+                    ) : (
+                      <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{c.content}</div>
+                    )}
                   </div>
                 </div>
               ))}

@@ -6,6 +6,7 @@ const ChatWindow = ({ connections, currentUser, socket, initialContact }) => {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [onlineUsers, setOnlineUsers] = useState({});
   const messagesEndRef = useRef(null);
 
   // Auto-scroll to bottom of conversation
@@ -62,9 +63,17 @@ const ChatWindow = ({ connections, currentUser, socket, initialContact }) => {
       }
     };
 
+    const handleUserOnline = ({ userId }) => setOnlineUsers(prev => ({ ...prev, [userId]: true }));
+    const handleUserOffline = ({ userId }) => setOnlineUsers(prev => ({ ...prev, [userId]: false }));
+
     socket.on('receive_message', handleReceiveMessage);
+    socket.on('user_online', handleUserOnline);
+    socket.on('user_offline', handleUserOffline);
+    
     return () => {
       socket.off('receive_message', handleReceiveMessage);
+      socket.off('user_online', handleUserOnline);
+      socket.off('user_offline', handleUserOffline);
     };
   }, [socket, activeContact, currentUser]);
 
@@ -107,7 +116,9 @@ const ChatWindow = ({ connections, currentUser, socket, initialContact }) => {
                   <img src={avatarUrl} alt={displayName} style={{ width: '40px', height: '40px', borderRadius: '50%' }} />
                   <div style={{ overflow: 'hidden' }}>
                     <h4 style={{ fontSize: '0.9rem', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{displayName}</h4>
-                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Active connection</p>
+                    <p style={{ fontSize: '0.75rem', color: onlineUsers[contact.id] ? 'var(--success)' : 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {onlineUsers[contact.id] ? 'Online' : 'Offline'}
+                    </p>
                   </div>
                 </div>
               );
@@ -134,7 +145,9 @@ const ChatWindow = ({ connections, currentUser, socket, initialContact }) => {
               />
               <div>
                 <h4 style={{ fontSize: '0.95rem', fontWeight: '700' }}>{activeContact.name}</h4>
-                <span style={{ fontSize: '0.75rem', color: 'var(--success)' }}>&bull; Online</span>
+                <span style={{ fontSize: '0.75rem', color: onlineUsers[activeContact.id] ? 'var(--success)' : 'var(--text-muted)' }}>
+                  &bull; {onlineUsers[activeContact.id] ? 'Online' : 'Offline'}
+                </span>
               </div>
             </div>
 

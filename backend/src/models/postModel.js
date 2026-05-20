@@ -11,7 +11,7 @@ class PostModel {
     return rows[0];
   }
 
-  static async getFeed(limit = 10, offset = 0, excludeUserId = null) {
+  static async getFeed(limit = 10, offset = 0, excludeUserId = null, searchQuery = null) {
     let paramIndex = 1;
     let sql = `
       SELECT 
@@ -22,6 +22,7 @@ class PostModel {
         (SELECT COUNT(*)::integer FROM comments WHERE post_id = p.id) as comment_count
       FROM posts p
       JOIN users u ON p.user_id = u.id
+      WHERE 1=1
     `;
     const params = [];
 
@@ -36,6 +37,12 @@ class PostModel {
       `;
       params.push(excludeUserId, excludeUserId);
       paramIndex += 2;
+    }
+
+    if (searchQuery) {
+      sql += ` AND (p.content ILIKE $${paramIndex} OR u.name ILIKE $${paramIndex} OR p.hashtags ILIKE $${paramIndex})`;
+      params.push(`%${searchQuery}%`);
+      paramIndex++;
     }
 
     sql += ` ORDER BY p.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
@@ -109,6 +116,34 @@ class PostModel {
     `;
     const { rows } = await query(sql, [content, imageUrl, hashtags, postId, userId]);
     return { id: postId, user_id: userId, content, image_url: imageUrl, hashtags, changes: rows.length };
+  }
+
+  static async deletePost(postId, userId) {
+    // Delete dependent tables manually if cascade is not set
+    await query('DELETE FROM likes WHERE post_id = $1', [postId]);
+    await query('DELETE FROM comments WHERE post_id = $1', [postId]);
+    await query('DELETE FROM viewed_history WHERE post_id = $1', [postId]);
+    
+    const sql = `DELETE FROM posts WHERE id = $1 AND user_id = $2 RETURNING id`;
+    const { rows } = await query(sql, [postId, userId]);
+    return rows.length > 0;
+  }
+
+  static async updateComment(commentId, userId, content) {
+    const sql = `
+      UPDATE comments
+      SET content = $1
+      WHERE id = $2 AND user_id = $3
+      RETURNING id, user_id, post_id, content
+    `;
+    const { rows } = await query(sql, [content, commentId, userId]);
+    return rows[0];
+  }
+
+  static async deleteComment(commentId, userId) {
+    const sql = `DELETE FROM comments WHERE id = $1 AND user_id = $2 RETURNING id, post_id`;
+    const { rows } = await query(sql, [commentId, userId]);
+    return rows[0];
   }
 }
 

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-const Header = ({ activeTab, onOpenPrivacyModal }) => {
+const Header = ({ activeTab, onOpenPrivacyModal, searchQuery, onSearchChange }) => {
   const [filterActive, setFilterActive] = useState(false);
 
   return (
@@ -13,6 +13,7 @@ const Header = ({ activeTab, onOpenPrivacyModal }) => {
           activeTab === 'jobs' ? 'Careers Hub' :
           activeTab === 'messaging' ? 'Professional Chats' :
           activeTab === 'notifications' ? 'Alerts Center' :
+          activeTab === 'post' ? 'Post Details' :
           'DwellSync Network'
         }</h1>
         <p>{
@@ -22,6 +23,7 @@ const Header = ({ activeTab, onOpenPrivacyModal }) => {
           activeTab === 'jobs' ? 'Discover high-impact roles matching your expertise' :
           activeTab === 'messaging' ? 'Secure 1-on-1 real-time communications with active connections' :
           activeTab === 'notifications' ? 'Stay updated with incoming invites, applications, and messages' :
+          activeTab === 'post' ? 'Viewing a single post' :
           'Your intelligent professional networking dashboard'
         }</p>
       </div>
@@ -29,7 +31,12 @@ const Header = ({ activeTab, onOpenPrivacyModal }) => {
       <div className="search-experience">
         <div className="search-bar glass">
           <i className="fa-solid fa-search"></i>
-          <input type="text" placeholder="Search by topic, author, or company..." />
+          <input 
+            type="text" 
+            placeholder="Search by topic, author, or company..." 
+            value={searchQuery || ''}
+            onChange={(e) => onSearchChange && onSearchChange(e.target.value)}
+          />
           <button 
             className={`filter-btn ${filterActive ? 'active' : ''}`}
             onClick={() => setFilterActive(!filterActive)}

@@ -32,6 +32,7 @@ function App() {
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [authorQuery, setAuthorQuery] = useState('');
   const [completionFilter, setCompletionFilter] = useState('all'); // 'all' | 'completed' | 'partial'
   const [dateRangeFilter, setDateRangeFilter] = useState('all'); // 'all' | 'today' | 'week'
@@ -83,6 +84,14 @@ function App() {
       console.error("Failed to load analytics", e);
     }
   };
+
+  // Debounce search query
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 400);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
 
   useEffect(() => {
     const verifyToken = async () => {
@@ -165,6 +174,20 @@ function App() {
       window.dispatchEvent(new CustomEvent(`post-update-sync-${updatedPost.id}`, { detail: updatedPost }));
     });
 
+    socketInstance.on('post_deleted', ({ postId }) => {
+      setPosts(prev => prev.filter(p => p.id !== postId));
+      setHistoryPosts(prev => prev.filter(p => p.id !== postId));
+    });
+
+    socketInstance.on('comment_deleted', ({ postId, commentId, commentCount }) => {
+      setPosts(prev => prev.map(p => p.id === postId ? { ...p, comment_count: commentCount } : p));
+      window.dispatchEvent(new CustomEvent(`delete-comment-${postId}`, { detail: commentId }));
+    });
+
+    socketInstance.on('comment_updated', ({ postId, comment }) => {
+      window.dispatchEvent(new CustomEvent(`update-comment-${postId}`, { detail: comment }));
+    });
+
     return () => {
       socketInstance.disconnect();
       setSocket(null);
@@ -181,11 +204,14 @@ function App() {
         const token = localStorage.getItem('token');
         
         let endpoint = `${API_BASE_URL}/api/feed`;
-        if (activeTab === 'home' && privacySettings.filter_read_posts) {
-          endpoint = `${API_BASE_URL}/api/feed?excludeViewed=true`;
+        if (activeTab === 'home') {
+          const params = new URLSearchParams();
+          if (privacySettings.filter_read_posts) params.append('excludeViewed', 'true');
+          if (debouncedSearchQuery) params.append('q', debouncedSearchQuery);
+          if (params.toString()) endpoint = `${API_BASE_URL}/api/feed?${params.toString()}`;
         } else if (activeTab === 'history') {
           const params = new URLSearchParams();
-          if (searchQuery) params.append('q', searchQuery);
+          if (debouncedSearchQuery) params.append('q', debouncedSearchQuery);
           if (authorQuery) params.append('author', authorQuery);
           if (completionFilter !== 'all') params.append('completed', completionFilter === 'completed' ? 'true' : 'false');
           if (dateRangeFilter !== 'all') params.append('dateRange', dateRangeFilter);
@@ -212,7 +238,7 @@ function App() {
     };
 
     fetchContent();
-  }, [isLoggedIn, activeTab, searchQuery, authorQuery, completionFilter, dateRangeFilter, privacySettings.filter_read_posts]);
+  }, [isLoggedIn, activeTab, debouncedSearchQuery, authorQuery, completionFilter, dateRangeFilter, privacySettings.filter_read_posts]);
 
   // URL routing synchronization effect
   useEffect(() => {
@@ -228,8 +254,8 @@ function App() {
         setActiveTab('notifications');
       } else if (path === '/history') {
         setActiveTab('history');
-      } else {
-        setActiveTab('home');
+      } else if (path.startsWith('/post/')) {
+        setActiveTab('post');
       }
     };
 
@@ -251,6 +277,7 @@ function App() {
     else if (tab === 'messaging') path = '/messages';
     else if (tab === 'notifications') path = '/notifications';
     else if (tab === 'history') path = '/history';
+    else if (tab === 'post') path = window.location.pathname; // preserve /post/:id
     
     if (window.location.pathname !== path) {
       window.history.pushState({}, '', path);
@@ -383,7 +410,12 @@ function App() {
       />
 
       <main className="main-content">
-        <Header activeTab={activeTab} onOpenPrivacyModal={() => setIsPrivacyModalOpen(true)} />
+        <Header 
+          activeTab={activeTab} 
+          onOpenPrivacyModal={() => setIsPrivacyModalOpen(true)} 
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+        />
 
         <div className="content-scrollable">
           <ProductivityWidgets 
@@ -501,11 +533,33 @@ function App() {
                   ) : (
                     <div className="empty-state" style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-muted)' }}>
                       <i className="fa-solid fa-comment-slash" style={{ fontSize: '48px', marginBottom: '16px', color: '#cbd5e1' }}></i>
-                      <h3>Your feed is empty</h3>
-                      <p>Be the first to share a post!</p>
+                      <h3>No posts found</h3>
+                      <p>{debouncedSearchQuery ? 'Try adjusting your search query.' : 'Be the first to share a post!'}</p>
                     </div>
                   )
                 )}
+
+                {activeTab === 'post' && (() => {
+                  const postId = parseInt(window.location.pathname.split('/').pop());
+                  const post = posts.find(p => p.id === postId) || historyPosts.find(p => p.id === postId);
+                  return post ? (
+                    <div>
+                      <button onClick={() => handleTabChange('home')} style={{ marginBottom: '16px', background: 'transparent', border: 'none', color: 'var(--primary-blue)', cursor: 'pointer', fontWeight: '600' }}><i className="fa-solid fa-arrow-left"></i> Back to Feed</button>
+                      <PostCard 
+                        key={post.id} 
+                        {...post} 
+                        currentUser={currentUser}
+                        minVisibilityPct={privacySettings.min_visibility_pct}
+                        minDurationSeconds={privacySettings.min_duration_seconds}
+                      />
+                    </div>
+                  ) : (
+                    <div className="empty-state" style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-muted)' }}>
+                      <h3>Post not found</h3>
+                      <button onClick={() => handleTabChange('home')} style={{ marginTop: '16px', padding: '8px 16px', background: 'var(--primary-blue)', color: 'white', border: 'none', borderRadius: '20px', cursor: 'pointer' }}>Go Home</button>
+                    </div>
+                  );
+                })()}
 
                 {activeTab === 'history' && (
                   <>
