@@ -1,9 +1,18 @@
 const fs = require('fs');
 const path = require('path');
+const { v2: cloudinary } = require('cloudinary');
 const PostModel = require('../models/postModel');
+const UserModel = require('../models/userModel');
+const NotificationsModel = require('../models/notificationsModel');
 
-// Helper to save base64 string as file and return URL
-function saveBase64Image(base64Str, baseUrl) {
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+// Helper to upload base64 string to Cloudinary and return its hosted URL.
+async function uploadBase64Image(base64Str) {
   if (!base64Str || !base64Str.startsWith('data:image/')) {
     return base64Str;
   }
@@ -13,20 +22,53 @@ function saveBase64Image(base64Str, baseUrl) {
     throw new Error('Invalid Base64 image format');
   }
 
-  const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
-  const dataBuffer = Buffer.from(matches[2], 'base64');
-  
-  const filename = `img_${Date.now()}_${Math.floor(Math.random() * 1000)}.${ext}`;
-  const uploadsDir = path.join(__dirname, '../../uploads');
-  
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
+  const ext = matches[1].toLowerCase();
+  if (!['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
+    throw new Error('Unsupported image format');
   }
 
-  const filePath = path.join(uploadsDir, filename);
-  fs.writeFileSync(filePath, dataBuffer);
+  const uploadResult = await cloudinary.uploader.upload(base64Str, {
+    folder: 'viewed-history/posts',
+    resource_type: 'image'
+  });
 
-  return `${baseUrl}/uploads/${filename}`;
+  return uploadResult.secure_url;
+}
+
+async function deleteUploadedImage(imageUrl) {
+  if (!imageUrl) return;
+
+  try {
+    const parsedUrl = new URL(imageUrl);
+    if (parsedUrl.hostname.endsWith('res.cloudinary.com') && parsedUrl.pathname.includes('/image/upload/')) {
+      const uploadPath = parsedUrl.pathname.split('/image/upload/')[1];
+      const publicPath = uploadPath.replace(/^v\d+\//, '').replace(/\.[^.]+$/, '');
+      if (publicPath) {
+        await cloudinary.uploader.destroy(publicPath, { resource_type: 'image' });
+      }
+      return;
+    }
+  } catch {
+    // Keep relative upload paths on the legacy local cleanup path below.
+  }
+
+  let uploadPath = imageUrl;
+  try {
+    uploadPath = new URL(imageUrl).pathname;
+  } catch {
+    // Keep relative upload paths as-is.
+  }
+
+  if (!uploadPath.startsWith('/uploads/')) return;
+
+  const filename = path.basename(uploadPath);
+  const uploadsDir = path.join(__dirname, '../../uploads');
+  const filePath = path.join(uploadsDir, filename);
+
+  if (!filePath.startsWith(uploadsDir)) return;
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  }
 }
 
 exports.createPost = async (req, res) => {
@@ -34,17 +76,23 @@ exports.createPost = async (req, res) => {
     let { content, imageUrl, hashtags } = req.body;
     const userId = req.user.id;
 
-    if (!content) {
+    if (!content || !content.trim()) {
       return res.status(400).json({ message: 'Post content is required' });
     }
 
-    // Convert base64 media upload to hosted static asset URL if applicable
+    content = content.trim();
+    hashtags = hashtags ? hashtags.trim() : null;
+
+    if (req.file) {
+      imageUrl = req.file.path;
+    }
+
+    // Convert base64 media upload to hosted Cloudinary URL if applicable.
     if (imageUrl && imageUrl.startsWith('data:image/')) {
       try {
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        imageUrl = saveBase64Image(imageUrl, baseUrl);
+        imageUrl = await uploadBase64Image(imageUrl);
       } catch (err) {
-        console.error('Failed to save base64 image:', err);
+        console.error('Failed to upload base64 image:', err);
         return res.status(400).json({ message: 'Invalid image upload data format' });
       }
     }
@@ -67,15 +115,24 @@ exports.createPost = async (req, res) => {
 
 exports.getFeed = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
     const offset = (page - 1) * limit;
+    const cursor = req.query.cursor || null;
     const excludeViewed = req.query.excludeViewed === 'true';
     const searchQuery = req.query.q || null;
     const userId = req.user ? req.user.id : null;
 
-    const posts = await PostModel.getFeed(limit, offset, excludeViewed ? userId : null, searchQuery);
-    res.status(200).json({ posts, page, limit });
+    const posts = await PostModel.getFeed({
+      limit,
+      offset,
+      cursor,
+      excludeUserId: excludeViewed ? userId : null,
+      searchQuery
+    });
+    const nextCursor = posts.length === limit ? posts[posts.length - 1].created_at : null;
+
+    res.status(200).json({ posts, page, limit, nextCursor });
   } catch (error) {
     console.error('Get Feed Error:', error);
     res.status(500).json({ message: 'Server error while fetching feed' });
@@ -104,19 +161,25 @@ exports.likePost = async (req, res) => {
     const postId = req.params.id;
 
     const result = await PostModel.toggleLike(userId, postId);
-    const fullPost = await PostModel.getPostById(postId);
 
     // Broadcast post like status update in real-time
     const io = req.app.get('io');
     if (io) {
       io.emit('post_liked', { 
         postId: parseInt(postId), 
-        likeCount: fullPost.like_count,
-        action: result.action 
+        likeCount: result.likeCount,
+        action: result.action,
+        actorUserId: userId
       });
     }
 
-    res.status(200).json({ message: `Post ${result.action} successfully`, likeCount: fullPost.like_count });
+    res.status(200).json({
+      message: `Post ${result.action} successfully`,
+      postId: parseInt(postId),
+      action: result.action,
+      likeCount: result.likeCount,
+      actorUserId: userId
+    });
   } catch (error) {
     console.error('Like Post Error:', error);
     res.status(500).json({ message: 'Server error while liking post' });
@@ -133,7 +196,12 @@ exports.commentOnPost = async (req, res) => {
       return res.status(400).json({ message: 'Comment content is required' });
     }
 
-    const comment = await PostModel.addComment(userId, postId, content);
+    const post = await PostModel.getPostById(postId);
+    if (!post) {
+      return res.status(404).json({ message: 'Post not found' });
+    }
+
+    await PostModel.addComment(userId, postId, content);
     
     // Retrieve full comments to get latest detailed comment structure (author fields)
     const comments = await PostModel.getComments(postId);
@@ -149,10 +217,105 @@ exports.commentOnPost = async (req, res) => {
       });
     }
 
+    if (post.user_id !== userId) {
+      const commenter = await UserModel.findById(userId);
+      const commenterName = commenter?.name || 'A user';
+      const notification = await NotificationsModel.createNotification(
+        post.user_id,
+        'new_comment',
+        `${commenterName} commented on your post.`
+      );
+
+      if (io) {
+        io.to(`user_${post.user_id}`).emit(`notification-${post.user_id}`, notification);
+        io.to(`user_${post.user_id}`).emit('notification_received', notification);
+      }
+    }
+
     res.status(201).json({ message: 'Comment added successfully', comment: latestComment });
   } catch (error) {
     console.error('Comment Error:', error);
     res.status(500).json({ message: 'Server error while commenting' });
+  }
+};
+
+exports.updateComment = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id: postId, commentId } = req.params;
+    const { content } = req.body;
+
+    if (!content || !content.trim()) {
+      return res.status(400).json({ message: 'Comment content is required' });
+    }
+
+    const existingComment = await PostModel.getCommentById(commentId);
+    if (!existingComment) {
+      return res.status(404).json({ message: 'Comment not found' });
+    }
+
+    if (existingComment.post_id !== Number(postId)) {
+      return res.status(404).json({ message: 'Comment not found for this post' });
+    }
+
+    if (existingComment.user_id !== userId) {
+      return res.status(403).json({ message: 'Not authorized to edit this comment' });
+    }
+
+    await PostModel.updateComment(commentId, userId, content.trim());
+    const updatedComment = await PostModel.getCommentById(commentId);
+    const comments = await PostModel.getComments(updatedComment.post_id);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('comment_updated', {
+        postId: updatedComment.post_id,
+        comment: updatedComment,
+        commentCount: comments.length
+      });
+    }
+
+    res.status(200).json({ message: 'Comment updated successfully', comment: updatedComment });
+  } catch (error) {
+    console.error('Update Comment Error:', error);
+    res.status(500).json({ message: 'Server error while updating comment' });
+  }
+};
+
+exports.deleteComment = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id: postId, commentId } = req.params;
+
+    const existingComment = await PostModel.getCommentById(commentId);
+    if (!existingComment) {
+      return res.status(404).json({ message: 'Comment not found' });
+    }
+
+    if (existingComment.post_id !== Number(postId)) {
+      return res.status(404).json({ message: 'Comment not found for this post' });
+    }
+
+    if (existingComment.user_id !== userId) {
+      return res.status(403).json({ message: 'Not authorized to delete this comment' });
+    }
+
+    const deletedComment = await PostModel.deleteComment(commentId, userId);
+    const comments = await PostModel.getComments(deletedComment.post_id);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('comment_deleted', {
+        postId: deletedComment.post_id,
+        commentId: Number(commentId),
+        commentCount: comments.length
+      });
+    }
+
+    res.status(200).json({ message: 'Comment deleted successfully', commentId: Number(commentId) });
+  } catch (error) {
+    console.error('Delete Comment Error:', error);
+    res.status(500).json({ message: 'Server error while deleting comment' });
   }
 };
 
@@ -191,10 +354,9 @@ exports.updatePost = async (req, res) => {
     // Handle native base64 uploaded image if applicable
     if (imageUrl && imageUrl.startsWith('data:image/')) {
       try {
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        imageUrl = saveBase64Image(imageUrl, baseUrl);
+        imageUrl = await uploadBase64Image(imageUrl);
       } catch (err) {
-        console.error('Failed to save base64 image:', err);
+        console.error('Failed to upload base64 image:', err);
         return res.status(400).json({ message: 'Invalid image upload data format' });
       }
     }
@@ -219,69 +381,28 @@ exports.deletePost = async (req, res) => {
   try {
     const postId = req.params.id;
     const userId = req.user.id;
-    
-    const post = await PostModel.getPostById(postId);
-    if (!post) return res.status(404).json({ message: 'Post not found' });
-    if (post.user_id !== userId) return res.status(403).json({ message: 'Not authorized to delete this post' });
 
-    const deleted = await PostModel.deletePost(postId, userId);
-    if (deleted) {
-      const io = req.app.get('io');
-      if (io) {
-        io.emit('post_deleted', { postId });
-      }
-      res.status(200).json({ message: 'Post deleted successfully', postId });
-    } else {
-      res.status(400).json({ message: 'Failed to delete post' });
+    const existingPost = await PostModel.getPostById(postId);
+    if (!existingPost) {
+      return res.status(404).json({ message: 'Post not found' });
     }
+
+    if (existingPost.user_id !== userId) {
+      return res.status(403).json({ message: 'Not authorized to delete this post' });
+    }
+
+    await PostModel.deletePost(postId, userId);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('post_deleted', { postId: Number(postId) });
+    }
+
+    await deleteUploadedImage(existingPost.image_url);
+
+    res.status(200).json({ message: 'Post deleted', postId: Number(postId) });
   } catch (error) {
     console.error('Delete Post Error:', error);
     res.status(500).json({ message: 'Server error while deleting post' });
-  }
-};
-
-exports.editComment = async (req, res) => {
-  try {
-    const { commentId } = req.params;
-    const userId = req.user.id;
-    const { content } = req.body;
-
-    if (!content) return res.status(400).json({ message: 'Content is required' });
-
-    const updatedComment = await PostModel.updateComment(commentId, userId, content);
-    if (!updatedComment) return res.status(404).json({ message: 'Comment not found or unauthorized' });
-
-    const io = req.app.get('io');
-    if (io) {
-      io.emit('comment_updated', { postId: updatedComment.post_id, comment: updatedComment });
-    }
-
-    res.status(200).json({ message: 'Comment updated', comment: updatedComment });
-  } catch (error) {
-    console.error('Edit Comment Error:', error);
-    res.status(500).json({ message: 'Server error while updating comment' });
-  }
-};
-
-exports.deleteComment = async (req, res) => {
-  try {
-    const { commentId } = req.params;
-    const userId = req.user.id;
-
-    const deleted = await PostModel.deleteComment(commentId, userId);
-    if (!deleted) return res.status(404).json({ message: 'Comment not found or unauthorized' });
-
-    // We need the comment count to broadcast
-    const comments = await PostModel.getComments(deleted.post_id);
-
-    const io = req.app.get('io');
-    if (io) {
-      io.emit('comment_deleted', { postId: deleted.post_id, commentId, commentCount: comments.length });
-    }
-
-    res.status(200).json({ message: 'Comment deleted', commentId });
-  } catch (error) {
-    console.error('Delete Comment Error:', error);
-    res.status(500).json({ message: 'Server error while deleting comment' });
   }
 };

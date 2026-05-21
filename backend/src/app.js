@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const path = require('path');
 const fs = require('fs');
 require('dotenv').config();
@@ -13,13 +14,16 @@ const connectionsRoutes = require('./routes/connectionsRoutes');
 const jobsRoutes = require('./routes/jobsRoutes');
 const messagesRoutes = require('./routes/messagesRoutes');
 const notificationsRoutes = require('./routes/notificationsRoutes');
+const searchRoutes = require('./routes/searchRoutes');
 const { protect } = require('./middleware/authMiddleware');
 const postController = require('./controllers/postController');
 
 const http = require('http');
 const { Server } = require('socket.io');
+const jwt = require('jsonwebtoken');
 
 const app = express();
+app.set('trust proxy', 1);
 
 // Create HTTP server
 const server = http.createServer(app);
@@ -34,11 +38,66 @@ const io = new Server(server, {
   pingTimeout: 5000
 });
 
-const onlineUsers = new Map();
-
 app.set('io', io);
 
+const onlineUsers = new Map();
+
+const normalizeUserId = (userId) => {
+  if (userId === undefined || userId === null) return null;
+  const normalized = String(userId).trim();
+  return normalized || null;
+};
+
+const getOnlineUserIds = () => Array.from(onlineUsers.keys()).map(Number);
+
+const addUserSocket = (userId, socketId) => {
+  const normalizedUserId = normalizeUserId(userId);
+  if (!normalizedUserId) return { userId: null, becameOnline: false };
+
+  const existingSockets = onlineUsers.get(normalizedUserId);
+  if (existingSockets) {
+    existingSockets.add(socketId);
+    return { userId: normalizedUserId, becameOnline: false };
+  }
+
+  onlineUsers.set(normalizedUserId, new Set([socketId]));
+  return { userId: normalizedUserId, becameOnline: true };
+};
+
+const removeUserSocket = (userId, socketId) => {
+  const normalizedUserId = normalizeUserId(userId);
+  if (!normalizedUserId) return { userId: null, becameOffline: false };
+
+  const existingSockets = onlineUsers.get(normalizedUserId);
+  if (!existingSockets) return { userId: normalizedUserId, becameOffline: false };
+
+  existingSockets.delete(socketId);
+  if (existingSockets.size > 0) {
+    return { userId: normalizedUserId, becameOffline: false };
+  }
+
+  onlineUsers.delete(normalizedUserId);
+  return { userId: normalizedUserId, becameOffline: true };
+};
+
+const shortCacheRoutes = [
+  /^\/api\/feed$/,
+  /^\/api\/posts$/,
+  /^\/api\/posts\/\d+$/,
+  /^\/api\/posts\/\d+\/comments$/,
+  /^\/api\/search$/,
+  /^\/api\/history$/,
+  /^\/api\/analytics\//
+];
+
 app.use(cors());
+app.use(compression());
+app.use((req, res, next) => {
+  if (req.method === 'GET' && shortCacheRoutes.some((routePattern) => routePattern.test(req.path))) {
+    res.set('Cache-Control', 'private, max-age=15, stale-while-revalidate=30');
+  }
+  next();
+});
 // Increase limit to handle larger base64 images if needed
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
@@ -58,27 +117,62 @@ initDB();
 // Socket.io connection and real-time messaging pipeline
 io.on('connection', (socket) => {
   console.log(`[Socket.io] Client connected: ${socket.id}`);
+
+  const token = socket.handshake.auth?.token;
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      socket.authenticatedUserId = normalizeUserId(decoded.id);
+    } catch (error) {
+      console.warn(`[Socket.io] Invalid auth token for socket ${socket.id}:`, error.message);
+    }
+  }
   
   socket.on('join', (userId) => {
-    if (!userId) return;
+    const requestedUserId = normalizeUserId(userId);
+    const joinedUserId = socket.authenticatedUserId || requestedUserId;
 
-    socket.userId = userId;
-    socket.join(`user_${userId}`);
-
-    const existingSockets = onlineUsers.get(userId) || new Set();
-    const wasOffline = existingSockets.size === 0;
-    existingSockets.add(socket.id);
-    onlineUsers.set(userId, existingSockets);
-
-    socket.emit('online_users', Array.from(onlineUsers.keys()));
-    if (wasOffline) {
-      socket.broadcast.emit('user_online', { userId });
+    if (socket.authenticatedUserId && requestedUserId && requestedUserId !== socket.authenticatedUserId) {
+      socket.emit('presence_error', { message: 'Socket user does not match authenticated user' });
+      return;
     }
-    console.log(`[Socket.io] User ${userId} joined room user_${userId} (connections=${existingSockets.size})`);
+
+    if (!joinedUserId) {
+      socket.emit('presence_error', { message: 'User id is required to join presence' });
+      return;
+    }
+
+    if (socket.userId && socket.userId !== joinedUserId) {
+      const { userId: previousUserId, becameOffline } = removeUserSocket(socket.userId, socket.id);
+      socket.leave(`user_${previousUserId}`);
+      if (becameOffline) {
+        io.emit('user_offline', { userId: Number(previousUserId), onlineUserIds: getOnlineUserIds() });
+      }
+    }
+
+    socket.userId = joinedUserId;
+    socket.join(`user_${joinedUserId}`);
+
+    const { becameOnline } = addUserSocket(joinedUserId, socket.id);
+    console.log(`[Socket.io] User ${joinedUserId} joined room user_${joinedUserId}`);
+
+    socket.emit('presence_snapshot', { userIds: getOnlineUserIds() });
+
+    if (becameOnline) {
+      io.emit('user_online', { userId: Number(joinedUserId), onlineUserIds: getOnlineUserIds() });
+    }
+  });
+
+  socket.on('presence_snapshot', () => {
+    socket.emit('presence_snapshot', { userIds: getOnlineUserIds() });
   });
 
   socket.on('send_message', async ({ senderId, receiverId, message }) => {
     if (!senderId || !receiverId || !message || message.trim() === '') return;
+    if (socket.userId && socket.userId !== normalizeUserId(senderId)) {
+      socket.emit('chat_error', { message: 'Socket user does not match message sender' });
+      return;
+    }
     
     try {
       const ConnectionsModel = require('./models/connectionsModel');
@@ -106,28 +200,21 @@ io.on('connection', (socket) => {
       io.to(`user_${receiverId}`).emit('receive_message', chatMessage);
       io.to(`user_${senderId}`).emit('receive_message', chatMessage);
 
-      // Broadcast notification to receiver room
+      // Broadcast notification to receiver room. Keep the user-scoped event for
+      // older clients and the generic event for current React listeners.
       io.to(`user_${receiverId}`).emit(`notification-${receiverId}`, notification);
+      io.to(`user_${receiverId}`).emit('notification_received', notification);
     } catch (e) {
       console.error('[Socket.io] send_message event error:', e);
     }
   });
 
   socket.on('disconnect', () => {
-    console.log(`[Socket.io] Client disconnected: ${socket.id}`);
-    if (!socket.userId) return;
-
-    const sockets = onlineUsers.get(socket.userId);
-    if (!sockets) return;
-
-    sockets.delete(socket.id);
-    if (sockets.size === 0) {
-      onlineUsers.delete(socket.userId);
-      socket.broadcast.emit('user_offline', { userId: socket.userId });
-      console.log(`[Socket.io] User ${socket.userId} is now offline`);
-    } else {
-      console.log(`[Socket.io] User ${socket.userId} still has ${sockets.size} active connection(s)`);
+    const { userId, becameOffline } = removeUserSocket(socket.userId, socket.id);
+    if (becameOffline) {
+      io.emit('user_offline', { userId: Number(userId), onlineUserIds: getOnlineUserIds() });
     }
+    console.log(`[Socket.io] Client disconnected: ${socket.id}`);
   });
 });
 
@@ -140,6 +227,7 @@ app.use('/api/connections', connectionsRoutes);
 app.use('/api/jobs', jobsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/notifications', notificationsRoutes);
+app.use('/api/search', searchRoutes);
 
 // Dedicated Feed API Route
 app.get('/api/feed', protect, postController.getFeed);

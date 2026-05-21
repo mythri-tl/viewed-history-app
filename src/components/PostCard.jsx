@@ -14,6 +14,7 @@ const PostCard = ({
   like_count: initialLikeCount = 0, 
   comment_count: initialCommentCount = 0,
   inHistoryView = false,
+  onDelete,
   minVisibilityPct = 50,
   minDurationSeconds = 3
 }) => {
@@ -27,14 +28,15 @@ const PostCard = ({
   const [newComment, setNewComment] = useState('');
   const [loadingComments, setLoadingComments] = useState(false);
   const [commentCount, setCommentCount] = useState(initialCommentCount);
-
-  // Comments Edit State
   const [editingCommentId, setEditingCommentId] = useState(null);
   const [editingCommentContent, setEditingCommentContent] = useState('');
+  const [commentActionError, setCommentActionError] = useState('');
+  const [postActionError, setPostActionError] = useState('');
+  const [isDeletingPost, setIsDeletingPost] = useState(false);
+  const [failedMediaUrl, setFailedMediaUrl] = useState('');
 
   // Image Loading State
   const [imageLoading, setImageLoading] = useState(true);
-  const [imageError, setImageError] = useState(false);
 
   // Edit Mode Local States
   const [isEditing, setIsEditing] = useState(false);
@@ -45,6 +47,26 @@ const PostCard = ({
   const [savingEdit, setSavingEdit] = useState(false);
   
   const fileInputRef = useRef(null);
+
+  const resolveImageUrl = (url) => {
+    if (!url || !url.trim()) return '';
+
+    const normalizedUrl = url.trim();
+    if (normalizedUrl.startsWith('data:image/')) return normalizedUrl;
+    if (normalizedUrl.startsWith('/uploads/')) return `${API_BASE_URL}${normalizedUrl}`;
+    if (normalizedUrl.startsWith('uploads/')) return `${API_BASE_URL}/${normalizedUrl}`;
+
+    try {
+      const parsedUrl = new URL(normalizedUrl);
+      if (parsedUrl.pathname.startsWith('/uploads/')) {
+        return `${API_BASE_URL}${parsedUrl.pathname}`;
+      }
+    } catch {
+      return normalizedUrl;
+    }
+
+    return normalizedUrl;
+  };
 
   // Sync state values with props when they are updated in real-time by parent WS
   const [prevProps, setPrevProps] = useState({ content, hashtags, image_url, initialLikeCount, initialCommentCount });
@@ -66,7 +88,6 @@ const PostCard = ({
   useEffect(() => {
     const resetId = window.requestAnimationFrame(() => {
       setImageLoading(true);
-      setImageError(false);
     });
     return () => window.cancelAnimationFrame(resetId);
   }, [image_url]);
@@ -93,6 +114,28 @@ const PostCard = ({
     window.addEventListener(`new-comment-${id}`, handleNewComment);
     return () => window.removeEventListener(`new-comment-${id}`, handleNewComment);
   }, [id]);
+
+  useEffect(() => {
+    const handleCommentUpdate = (e) => {
+      const comment = e.detail;
+      setComments(prev => prev.map(c => c.id === comment.id ? { ...c, ...comment } : c));
+    };
+    const handleCommentDelete = (e) => {
+      const { commentId } = e.detail;
+      setComments(prev => prev.filter(c => c.id !== commentId));
+      if (editingCommentId === commentId) {
+        setEditingCommentId(null);
+        setEditingCommentContent('');
+      }
+    };
+
+    window.addEventListener(`comment-update-${id}`, handleCommentUpdate);
+    window.addEventListener(`comment-delete-${id}`, handleCommentDelete);
+    return () => {
+      window.removeEventListener(`comment-update-${id}`, handleCommentUpdate);
+      window.removeEventListener(`comment-delete-${id}`, handleCommentDelete);
+    };
+  }, [id, editingCommentId]);
 
   // Real-time post edit update listener
   useEffect(() => {
@@ -144,7 +187,13 @@ const PostCard = ({
             duration_seconds: seconds,
             completed: seconds >= minDurationSeconds
           })
-        }).catch(err => console.error("Failed to mark viewed:", err));
+        })
+          .then(response => {
+            if (response.ok) {
+              window.dispatchEvent(new Event('history-view-tracked'));
+            }
+          })
+          .catch(err => console.error("Failed to mark viewed:", err));
         
         // Reset dwelling counter for next view
         totalDwellTime = 0;
@@ -195,10 +244,10 @@ const PostCard = ({
       const data = await response.json();
       
       if (response.ok) {
-        setLikeCount(data.likeCount); // Set directly from server response to avoid race condition double counts
-        if (data.message.includes('unliked')) {
+        setLikeCount(data.likeCount);
+        if (data.action === 'unliked' || data.message.includes('unliked')) {
           setIsLiked(false);
-        } else if (data.message.includes('liked')) {
+        } else if (data.action === 'liked' || data.message.includes('liked')) {
           setIsLiked(true);
         }
       }
@@ -237,7 +286,7 @@ const PostCard = ({
 
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_BASE_URL}/api/posts/${id}/comment`, {
+      const res = await fetch(`${API_BASE_URL}/api/posts/${id}/comments`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -248,7 +297,7 @@ const PostCard = ({
       const data = await res.json();
       
       if (res.ok) {
-        setComments(prev => [...prev, data.comment]);
+        setComments(prev => prev.some(c => c.id === data.comment.id) ? prev : [...prev, data.comment]);
         setNewComment('');
         setCommentCount(prev => prev + 1);
       }
@@ -257,79 +306,64 @@ const PostCard = ({
     }
   };
 
-  const handleEditCommentSubmit = async (e, commentId) => {
-    e.preventDefault();
+  const handleStartEditComment = (comment) => {
+    setEditingCommentId(comment.id);
+    setEditingCommentContent(comment.content);
+    setCommentActionError('');
+  };
+
+  const handleCancelEditComment = () => {
+    setEditingCommentId(null);
+    setEditingCommentContent('');
+    setCommentActionError('');
+  };
+
+  const handleUpdateComment = async (commentId) => {
     if (!editingCommentContent.trim()) return;
 
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_BASE_URL}/api/posts/${id}/comment/${commentId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/posts/${id}/comments/${commentId}`, {
         method: 'PATCH',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}` 
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ content: editingCommentContent })
       });
       const data = await res.json();
-      
+
       if (res.ok) {
-        setComments(prev => prev.map(c => c.id === commentId ? { ...c, content: data.comment.content } : c));
-        setEditingCommentId(null);
+        setComments(prev => prev.map(c => c.id === commentId ? data.comment : c));
+        handleCancelEditComment();
+      } else {
+        setCommentActionError(data.message || 'Failed to update comment');
       }
-    } catch (err) {
-      console.error("Failed to edit comment", err);
+    } catch {
+      setCommentActionError('Server connection failed.');
     }
   };
 
   const handleDeleteComment = async (commentId) => {
-    if (!window.confirm("Are you sure you want to delete this comment?")) return;
-    
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_BASE_URL}/api/posts/${id}/comment/${commentId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/posts/${id}/comments/${commentId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      
+      const data = await res.json();
+
       if (res.ok) {
         setComments(prev => prev.filter(c => c.id !== commentId));
         setCommentCount(prev => Math.max(0, prev - 1));
+        if (editingCommentId === commentId) handleCancelEditComment();
+      } else {
+        setCommentActionError(data.message || 'Failed to delete comment');
       }
-    } catch (err) {
-      console.error("Failed to delete comment", err);
+    } catch {
+      setCommentActionError('Server connection failed.');
     }
   };
-
-  const handleDeletePost = async () => {
-    if (!window.confirm("Are you sure you want to delete this post?")) return;
-
-    try {
-      const token = localStorage.getItem('token');
-      const res = await fetch(`${API_BASE_URL}/api/posts/${id}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
-      if (res.ok) {
-        // Will be removed from feed via socket event or parent state update
-        window.dispatchEvent(new CustomEvent('post_deleted', { detail: { postId: id } }));
-      }
-    } catch (err) {
-      console.error("Failed to delete post", err);
-    }
-  };
-
-  const handleShare = () => {
-    const postUrl = `${window.location.origin}/post/${id}`;
-    navigator.clipboard.writeText(postUrl)
-      .then(() => {
-        // Simple toast or alert
-        alert("Link copied to clipboard!");
-      })
-      .catch(err => console.error("Failed to copy link", err));
-  };
-
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -360,6 +394,44 @@ const PostCard = ({
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+  };
+
+  const handleDeletePost = async () => {
+    if (isDeletingPost) return;
+
+    const shouldDelete = window.confirm('Delete this post? This action cannot be undone.');
+    if (!shouldDelete) return;
+
+    setIsDeletingPost(true);
+    setPostActionError('');
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_BASE_URL}/api/posts/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await response.json();
+
+      if (response.ok) {
+        if (onDelete) onDelete(data.postId);
+      } else {
+        setPostActionError(data.message || 'Failed to delete post');
+      }
+    } catch {
+      setPostActionError('Server connection failed.');
+    } finally {
+      setIsDeletingPost(false);
+    }
+  };
+
+  const handleShare = () => {
+    const postUrl = `${window.location.origin}/post/${id}`;
+    navigator.clipboard.writeText(postUrl)
+      .then(() => {
+        alert("Link copied to clipboard!");
+      })
+      .catch(err => console.error("Failed to copy link", err));
   };
 
   const handleEditSubmit = async (e) => {
@@ -402,6 +474,9 @@ const PostCard = ({
 
   // Format date loosely
   const dateStr = new Date(created_at).toLocaleDateString();
+  const mediaUrl = resolveImageUrl(image_url);
+  const editPreviewUrl = resolveImageUrl(editImageUrl);
+  const mediaLoadFailed = failedMediaUrl === mediaUrl;
 
   // If in Edit Mode, render inline editor instead of regular card content
   if (isEditing) {
@@ -464,7 +539,7 @@ const PostCard = ({
           {editImageUrl.trim() ? (
             <div style={{ position: 'relative', borderRadius: 'var(--border-radius-md)', overflow: 'hidden', border: '1px solid var(--border-color)', marginTop: '8px' }}>
               <img 
-                src={editImageUrl} 
+                src={editPreviewUrl} 
                 alt="Post preview" 
                 style={{ width: '100%', maxHeight: '240px', objectFit: 'cover', display: 'block' }}
                 onError={(e) => { e.target.style.display = 'none'; }}
@@ -548,7 +623,7 @@ const PostCard = ({
           </div>
         </div>
         {currentUser && currentUser.id === user_id && (
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
             <button 
               onClick={() => setIsEditing(true)} 
               style={{ 
@@ -568,62 +643,73 @@ const PostCard = ({
               }}
               onMouseOver={(e) => { e.currentTarget.style.background = 'rgba(0,0,0,0.05)'; e.currentTarget.style.color = 'var(--primary-blue)'; }}
               onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
-              title="Edit Post"
+              title="Edit Post Content and Hashtags"
             >
-              <i className="fa-solid fa-pen-to-square"></i>
+              <i className="fa-solid fa-pen-to-square"></i> Edit
             </button>
-            <button 
-              onClick={handleDeletePost} 
-              style={{ 
-                background: 'transparent', 
-                border: 'none', 
-                color: 'var(--text-muted)', 
-                cursor: 'pointer', 
-                fontSize: '0.85rem', 
-                padding: '6px 12px', 
+            <button
+              onClick={handleDeletePost}
+              disabled={isDeletingPost}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-muted)',
+                cursor: isDeletingPost ? 'not-allowed' : 'pointer',
+                fontSize: '0.85rem',
+                padding: '6px 12px',
                 borderRadius: '20px',
                 transition: 'all 0.2s',
                 alignSelf: 'center',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px',
-                fontWeight: '600'
+                fontWeight: '600',
+                opacity: isDeletingPost ? 0.6 : 1
               }}
-              onMouseOver={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'; e.currentTarget.style.color = '#ef4444'; }}
+              onMouseOver={(e) => { if (!isDeletingPost) { e.currentTarget.style.background = 'rgba(239,68,68,0.08)'; e.currentTarget.style.color = 'var(--danger)'; } }}
               onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
               title="Delete Post"
             >
-              <i className="fa-solid fa-trash"></i>
+              <i className="fa-solid fa-trash"></i> {isDeletingPost ? 'Deleting...' : 'Delete'}
             </button>
           </div>
         )}
       </div>
+
+      {postActionError && (
+        <div style={{ color: 'var(--danger)', marginTop: '12px', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <i className="fa-solid fa-circle-exclamation"></i> {postActionError}
+        </div>
+      )}
       
       <div className="post-content">
         <p style={{ whiteSpace: 'pre-wrap' }}>{content}</p>
         {hashtags && <p style={{ color: 'var(--primary-blue)', marginTop: '8px', fontWeight: '500' }}>{hashtags}</p>}
       </div>
 
-      {image_url && !imageError && (
-        <div className="post-media" style={{ marginTop: '16px', borderRadius: 'var(--border-radius-md)', overflow: 'hidden', border: '1px solid var(--border-color)', minHeight: imageLoading ? '300px' : 'auto', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
-          {imageLoading && (
+      {mediaUrl && (
+        <div className="post-media" style={{ marginTop: '16px', borderRadius: 'var(--border-radius-md)', overflow: 'hidden', border: '1px solid var(--border-color)', minHeight: imageLoading && !mediaLoadFailed ? '300px' : 'auto', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
+          {imageLoading && !mediaLoadFailed && (
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <i className="fa-solid fa-spinner fa-spin" style={{ color: 'var(--primary-blue)', fontSize: '24px' }}></i>
             </div>
           )}
-          <img 
-            src={image_url} 
-            alt="Post media" 
-            onLoad={() => setImageLoading(false)}
-            onError={() => { setImageLoading(false); setImageError(true); }}
-            style={{ width: '100%', maxHeight: '400px', objectFit: 'cover', display: imageLoading ? 'none' : 'block' }} 
-          />
-        </div>
-      )}
-      {imageError && (
-        <div className="post-media" style={{ marginTop: '16px', borderRadius: 'var(--border-radius-md)', border: '1px solid var(--border-color)', minHeight: '150px', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', flexDirection: 'column', gap: '8px' }}>
-          <i className="fa-regular fa-image" style={{ fontSize: '32px' }}></i>
-          <span style={{ fontSize: '0.9rem', fontWeight: '500' }}>Image unavailable</span>
+          {mediaLoadFailed ? (
+            <div style={{ minHeight: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.55)', fontSize: '0.9rem', fontWeight: '600', width: '100%' }}>
+              <i className="fa-regular fa-image"></i> Image unavailable
+            </div>
+          ) : (
+            <img
+              src={mediaUrl}
+              alt="Post media"
+              style={{ width: '100%', maxHeight: '400px', objectFit: 'cover', display: imageLoading ? 'none' : 'block' }}
+              onLoad={() => setImageLoading(false)}
+              onError={() => {
+                setImageLoading(false);
+                setFailedMediaUrl(mediaUrl);
+              }}
+            />
+          )}
         </div>
       )}
 
@@ -639,9 +725,10 @@ const PostCard = ({
           disabled={isLiking}
           style={{ 
             background: 'transparent', border: 'none', padding: '8px 24px', 
-            borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px',
+            borderRadius: '4px', cursor: isLiking ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '8px',
             color: isLiked ? 'var(--primary-blue)' : 'var(--text-muted)',
-            fontWeight: '600', transition: 'all 0.2s', fontSize: '0.9rem'
+            fontWeight: '600', transition: 'all 0.2s', fontSize: '0.9rem',
+            opacity: isLiking ? 0.6 : 1
           }}
           onMouseOver={(e) => e.currentTarget.style.background = 'rgba(0,0,0,0.03)'}
           onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
@@ -695,27 +782,43 @@ const PostCard = ({
              <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.9rem', padding: '12px 0' }}>Loading comments...</div>
           ) : (
             <div className="comments-list" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {commentActionError && (
+                <div style={{ color: 'var(--danger)', fontSize: '0.85rem' }}>{commentActionError}</div>
+              )}
               {comments.map(c => (
                 <div key={c.id} className="comment-item" style={{ display: 'flex', gap: '12px' }}>
                   <img src={c.author_image || `https://ui-avatars.com/api/?name=${encodeURIComponent(c.author_name || 'User')}&background=ccc&color=fff`} alt={c.author_name} style={{ width: '36px', height: '36px', borderRadius: '50%' }} />
-                  <div style={{ background: 'white', padding: '10px 14px', borderRadius: '4px 16px 16px 16px', border: '1px solid var(--border-color)', flex: 1, position: 'relative' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                  <div style={{ background: 'white', padding: '10px 14px', borderRadius: '4px 16px 16px 16px', border: '1px solid var(--border-color)', flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center', marginBottom: '4px' }}>
                       <div style={{ fontWeight: '600', fontSize: '0.85rem', color: 'var(--text-main)' }}>{c.author_name}</div>
                       {currentUser && currentUser.id === c.user_id && (
                         <div style={{ display: 'flex', gap: '8px' }}>
-                          <button onClick={() => { setEditingCommentId(c.id); setEditingCommentContent(c.content); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }} title="Edit Comment"><i className="fa-solid fa-pen" style={{ fontSize: '0.75rem' }}></i></button>
-                          <button onClick={() => handleDeleteComment(c.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }} title="Delete Comment"><i className="fa-solid fa-trash" style={{ fontSize: '0.75rem' }}></i></button>
+                          {editingCommentId === c.id ? (
+                            <button type="button" onClick={handleCancelEditComment} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}>Cancel</button>
+                          ) : (
+                            <button type="button" onClick={() => handleStartEditComment(c)} style={{ background: 'transparent', border: 'none', color: 'var(--primary-blue)', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}>Edit</button>
+                          )}
+                          <button type="button" onClick={() => handleDeleteComment(c.id)} style={{ background: 'transparent', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}>Delete</button>
                         </div>
                       )}
                     </div>
                     {editingCommentId === c.id ? (
-                      <form onSubmit={(e) => handleEditCommentSubmit(e, c.id)} style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-                        <input type="text" value={editingCommentContent} onChange={(e) => setEditingCommentContent(e.target.value)} style={{ padding: '6px 10px', borderRadius: '4px', border: '1px solid var(--border-color)', outline: 'none' }} />
-                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                          <button type="button" onClick={() => setEditingCommentId(null)} style={{ background: 'transparent', border: 'none', fontSize: '0.8rem', cursor: 'pointer', color: 'var(--text-muted)' }}>Cancel</button>
-                          <button type="submit" disabled={!editingCommentContent.trim()} style={{ background: 'var(--primary-blue)', color: 'white', border: 'none', borderRadius: '4px', padding: '4px 12px', fontSize: '0.8rem', cursor: 'pointer' }}>Save</button>
-                        </div>
-                      </form>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <input
+                          type="text"
+                          value={editingCommentContent}
+                          onChange={e => setEditingCommentContent(e.target.value)}
+                          style={{ flex: 1, padding: '8px 10px', borderRadius: '16px', border: '1px solid var(--border-color)', outline: 'none', fontSize: '0.85rem' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateComment(c.id)}
+                          disabled={!editingCommentContent.trim()}
+                          style={{ border: 'none', background: 'var(--primary-blue)', color: 'white', borderRadius: '16px', padding: '6px 12px', cursor: editingCommentContent.trim() ? 'pointer' : 'not-allowed', opacity: editingCommentContent.trim() ? 1 : 0.6, fontSize: '0.75rem', fontWeight: '600' }}
+                        >
+                          Save
+                        </button>
+                      </div>
                     ) : (
                       <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{c.content}</div>
                     )}

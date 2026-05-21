@@ -54,9 +54,10 @@ class MessagesController {
       // Emit events via Socket.io
       const io = req.app.get('io');
       if (io) {
-        // Emit to recipient's live listeners
-        io.emit(`chat-${receiver_id}`, chatMessage);
-        io.emit(`notification-${receiver_id}`, notification);
+        io.to(`user_${receiver_id}`).emit('receive_message', chatMessage);
+        io.to(`user_${senderId}`).emit('receive_message', chatMessage);
+        io.to(`user_${receiver_id}`).emit(`notification-${receiver_id}`, notification);
+        io.to(`user_${receiver_id}`).emit('notification_received', notification);
       }
 
       res.status(201).json({ message: 'Message sent successfully', chatMessage });

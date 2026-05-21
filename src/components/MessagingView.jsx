@@ -5,6 +5,7 @@ import ChatWindow from './ChatWindow';
 const MessagingView = ({ currentUser, socket, selectedContact }) => {
   const [connections, setConnections] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [onlineUserIds, setOnlineUserIds] = useState([]);
 
   useEffect(() => {
     const fetchConnections = async () => {
@@ -28,6 +29,51 @@ const MessagingView = ({ currentUser, socket, selectedContact }) => {
     fetchConnections();
   }, []);
 
+  useEffect(() => {
+    if (!socket || !currentUser?.id) return;
+
+    const normalizeIds = (ids = []) => ids.map(id => Number(id)).filter(Number.isFinite);
+
+    const requestPresenceSnapshot = () => {
+      socket.emit('join', currentUser.id);
+      socket.emit('presence_snapshot');
+    };
+
+    const handlePresenceSnapshot = ({ userIds } = {}) => {
+      setOnlineUserIds(normalizeIds(userIds));
+    };
+
+    const handleUserOnline = ({ userId }) => {
+      const normalizedUserId = Number(userId);
+      if (!Number.isFinite(normalizedUserId)) return;
+      setOnlineUserIds(prev => (
+        prev.includes(normalizedUserId) ? prev : [...prev, normalizedUserId]
+      ));
+    };
+
+    const handleUserOffline = ({ userId }) => {
+      const normalizedUserId = Number(userId);
+      if (!Number.isFinite(normalizedUserId)) return;
+      setOnlineUserIds(prev => prev.filter(id => id !== normalizedUserId));
+    };
+
+    socket.on('connect', requestPresenceSnapshot);
+    socket.on('presence_snapshot', handlePresenceSnapshot);
+    socket.on('user_online', handleUserOnline);
+    socket.on('user_offline', handleUserOffline);
+
+    if (socket.connected) {
+      requestPresenceSnapshot();
+    }
+
+    return () => {
+      socket.off('connect', requestPresenceSnapshot);
+      socket.off('presence_snapshot', handlePresenceSnapshot);
+      socket.off('user_online', handleUserOnline);
+      socket.off('user_offline', handleUserOffline);
+    };
+  }, [socket, currentUser?.id]);
+
   return (
     <div className="messaging-view">
       <div style={{ marginBottom: '16px' }}>
@@ -46,6 +92,7 @@ const MessagingView = ({ currentUser, socket, selectedContact }) => {
           currentUser={currentUser} 
           socket={socket} 
           initialContact={selectedContact}
+          onlineUserIds={onlineUserIds}
         />
       )}
     </div>

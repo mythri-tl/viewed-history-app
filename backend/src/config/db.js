@@ -43,6 +43,13 @@ const initDB = async () => {
       )
     `);
 
+    await pool.query(`
+      ALTER TABLE posts
+      ADD COLUMN IF NOT EXISTS image_url TEXT,
+      ADD COLUMN IF NOT EXISTS hashtags TEXT,
+      ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    `);
+
     // 3. Likes
     await pool.query(`
       CREATE TABLE IF NOT EXISTS likes (
@@ -63,6 +70,21 @@ const initDB = async () => {
         content TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
+    `);
+
+    await pool.query(`
+      ALTER TABLE comments
+      ADD COLUMN IF NOT EXISTS content TEXT,
+      ADD COLUMN IF NOT EXISTS comment_text TEXT,
+      ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    `);
+
+    await pool.query(`
+      UPDATE comments
+      SET
+        content = COALESCE(content, comment_text),
+        comment_text = COALESCE(comment_text, content)
+      WHERE content IS NULL OR comment_text IS NULL
     `);
 
     // 5. Viewed History
@@ -162,6 +184,19 @@ const initDB = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // Hot-path indexes for feed, comments, likes, and history reads.
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts (created_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_comments_post_id_created_at ON comments (post_id, created_at ASC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_likes_post_id ON likes (post_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_viewed_history_user_id_viewed_at ON viewed_history (user_id, viewed_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_viewed_history_user_id_post_id ON viewed_history (user_id, post_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_posts_id ON posts (id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_posts_content ON posts (content)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_posts_hashtags ON posts (hashtags)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_name ON users (name)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_jobs_title ON jobs (title)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs (company)`);
 
     console.log("PostgreSQL Database schema initialized successfully.");
   } catch (err) {
