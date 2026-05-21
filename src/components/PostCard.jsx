@@ -21,6 +21,7 @@ const PostCard = ({
   const [likeCount, setLikeCount] = useState(initialLikeCount);
   const [isLiked, setIsLiked] = useState(false);
   const [isLiking, setIsLiking] = useState(false);
+  const isLikingRef = useRef(false);
   
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState([]);
@@ -33,6 +34,9 @@ const PostCard = ({
   const [postActionError, setPostActionError] = useState('');
   const [isDeletingPost, setIsDeletingPost] = useState(false);
   const [failedMediaUrl, setFailedMediaUrl] = useState('');
+
+  // Image Loading State
+  const [imageLoading, setImageLoading] = useState(true);
 
   // Edit Mode Local States
   const [isEditing, setIsEditing] = useState(false);
@@ -79,6 +83,14 @@ const PostCard = ({
     setEditHashtags(hashtags || '');
     setEditImageUrl(image_url || '');
   }
+
+  // Reset image loading state when a new image source arrives
+  useEffect(() => {
+    const resetId = window.requestAnimationFrame(() => {
+      setImageLoading(true);
+    });
+    return () => window.cancelAnimationFrame(resetId);
+  }, [image_url]);
 
   // Sync like event updates
   useEffect(() => {
@@ -218,7 +230,8 @@ const PostCard = ({
   }, [id, inHistoryView, isEditing, minVisibilityPct, minDurationSeconds]);
 
   const handleLike = async () => {
-    if (isLiking) return;
+    if (isLikingRef.current) return;
+    isLikingRef.current = true;
     setIsLiking(true);
 
     try {
@@ -232,7 +245,6 @@ const PostCard = ({
       
       if (response.ok) {
         setLikeCount(data.likeCount);
-
         if (data.action === 'unliked' || data.message.includes('unliked')) {
           setIsLiked(false);
         } else if (data.action === 'liked' || data.message.includes('liked')) {
@@ -242,6 +254,7 @@ const PostCard = ({
     } catch (error) {
       console.error("Failed to like post", error);
     } finally {
+      isLikingRef.current = false;
       setIsLiking(false);
     }
   };
@@ -351,7 +364,6 @@ const PostCard = ({
       setCommentActionError('Server connection failed.');
     }
   };
-
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -411,6 +423,15 @@ const PostCard = ({
     } finally {
       setIsDeletingPost(false);
     }
+  };
+
+  const handleShare = () => {
+    const postUrl = `${window.location.origin}/post/${id}`;
+    navigator.clipboard.writeText(postUrl)
+      .then(() => {
+        alert("Link copied to clipboard!");
+      })
+      .catch(err => console.error("Failed to copy link", err));
   };
 
   const handleEditSubmit = async (e) => {
@@ -667,17 +688,26 @@ const PostCard = ({
       </div>
 
       {mediaUrl && (
-        <div className="post-media" style={{ marginTop: '16px', borderRadius: 'var(--border-radius-md)', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+        <div className="post-media" style={{ marginTop: '16px', borderRadius: 'var(--border-radius-md)', overflow: 'hidden', border: '1px solid var(--border-color)', minHeight: imageLoading && !mediaLoadFailed ? '300px' : 'auto', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
+          {imageLoading && !mediaLoadFailed && (
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <i className="fa-solid fa-spinner fa-spin" style={{ color: 'var(--primary-blue)', fontSize: '24px' }}></i>
+            </div>
+          )}
           {mediaLoadFailed ? (
-            <div style={{ minHeight: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.55)', fontSize: '0.9rem', fontWeight: '600' }}>
+            <div style={{ minHeight: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.55)', fontSize: '0.9rem', fontWeight: '600', width: '100%' }}>
               <i className="fa-regular fa-image"></i> Image unavailable
             </div>
           ) : (
             <img
               src={mediaUrl}
               alt="Post media"
-              style={{ width: '100%', maxHeight: '400px', objectFit: 'cover', display: 'block' }}
-              onError={() => setFailedMediaUrl(mediaUrl)}
+              style={{ width: '100%', maxHeight: '400px', objectFit: 'cover', display: imageLoading ? 'none' : 'block' }}
+              onLoad={() => setImageLoading(false)}
+              onError={() => {
+                setImageLoading(false);
+                setFailedMediaUrl(mediaUrl);
+              }}
             />
           )}
         </div>
@@ -718,6 +748,20 @@ const PostCard = ({
           onMouseOut={(e) => e.currentTarget.style.background = showComments ? 'rgba(0,0,0,0.03)' : 'transparent'}
         >
           <i className="fa-regular fa-comment"></i> Comment
+        </button>
+        <button 
+          className="action-btn" 
+          onClick={handleShare}
+          style={{ 
+            background: 'transparent', 
+            border: 'none', padding: '8px 24px', borderRadius: '4px', cursor: 'pointer', 
+            display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', 
+            fontWeight: '600', fontSize: '0.9rem' 
+          }}
+          onMouseOver={(e) => e.currentTarget.style.background = 'rgba(0,0,0,0.03)'}
+          onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+        >
+          <i className="fa-solid fa-share-nodes"></i> Share
         </button>
       </div>
 

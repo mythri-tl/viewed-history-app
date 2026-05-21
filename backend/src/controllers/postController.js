@@ -120,13 +120,15 @@ exports.getFeed = async (req, res) => {
     const offset = (page - 1) * limit;
     const cursor = req.query.cursor || null;
     const excludeViewed = req.query.excludeViewed === 'true';
+    const searchQuery = req.query.q || null;
     const userId = req.user ? req.user.id : null;
 
     const posts = await PostModel.getFeed({
       limit,
       offset,
       cursor,
-      excludeUserId: excludeViewed ? userId : null
+      excludeUserId: excludeViewed ? userId : null,
+      searchQuery
     });
     const nextCursor = posts.length === limit ? posts[posts.length - 1].created_at : null;
 

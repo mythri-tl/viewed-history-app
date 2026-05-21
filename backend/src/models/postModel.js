@@ -11,7 +11,7 @@ class PostModel {
     return rows[0];
   }
 
-  static async getFeed({ limit = 10, offset = 0, cursor = null, excludeUserId = null } = {}) {
+  static async getFeed({ limit = 10, offset = 0, cursor = null, excludeUserId = null, searchQuery = null } = {}) {
     let paramIndex = 1;
     let sql = `
       SELECT 
@@ -22,6 +22,7 @@ class PostModel {
         (SELECT COUNT(*)::integer FROM comments WHERE post_id = p.id) as comment_count
       FROM posts p
       JOIN users u ON p.user_id = u.id
+      WHERE 1=1
     `;
     const params = [];
     const whereClauses = [];
@@ -39,13 +40,19 @@ class PostModel {
       paramIndex += 2;
     }
 
+    if (searchQuery) {
+      whereClauses.push(`(p.content ILIKE $${paramIndex} OR u.name ILIKE $${paramIndex} OR p.hashtags ILIKE $${paramIndex})`);
+      params.push(`%${searchQuery}%`);
+      paramIndex++;
+    }
+
     if (cursor) {
       whereClauses.push(`p.created_at < $${paramIndex++}`);
       params.push(cursor);
     }
 
     if (whereClauses.length > 0) {
-      sql += ` WHERE ${whereClauses.join(' AND ')}`;
+      sql += ` AND ${whereClauses.join(' AND ')}`;
     }
 
     sql += ` ORDER BY p.created_at DESC LIMIT $${paramIndex}`;

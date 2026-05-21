@@ -1,12 +1,19 @@
 import { useState } from 'react';
 
-const Header = ({ activeTab, onOpenPrivacyModal, onSearch }) => {
+const Header = ({ activeTab, onOpenPrivacyModal, onSearch, searchQuery, onSearchChange }) => {
   const [filterActive, setFilterActive] = useState(false);
   const [query, setQuery] = useState('');
+  const inputValue = searchQuery ?? query;
+
+  const handleSearchChange = (e) => {
+    const value = e.target.value;
+    if (onSearchChange) onSearchChange(value);
+    setQuery(value);
+  };
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
-    const trimmedQuery = query.trim();
+    const trimmedQuery = inputValue.trim();
     if (!trimmedQuery) return;
     if (onSearch) onSearch(trimmedQuery);
   };
@@ -22,6 +29,7 @@ const Header = ({ activeTab, onOpenPrivacyModal, onSearch }) => {
           activeTab === 'messaging' ? 'Professional Chats' :
           activeTab === 'notifications' ? 'Alerts Center' :
           activeTab === 'search' ? 'Search Results' :
+          activeTab === 'post' ? 'Post Details' :
           'DwellSync Network'
         }</h1>
         <p>{
@@ -32,10 +40,11 @@ const Header = ({ activeTab, onOpenPrivacyModal, onSearch }) => {
           activeTab === 'messaging' ? 'Secure 1-on-1 real-time communications with active connections' :
           activeTab === 'notifications' ? 'Stay updated with incoming invites, applications, and messages' :
           activeTab === 'search' ? 'Find posts, people, companies, and jobs across your network' :
+          activeTab === 'post' ? 'Viewing a single post' :
           'Your intelligent professional networking dashboard'
         }</p>
       </div>
-      
+
       <div className="search-experience">
         <form className="search-bar glass" onSubmit={handleSearchSubmit}>
           <button
@@ -48,10 +57,10 @@ const Header = ({ activeTab, onOpenPrivacyModal, onSearch }) => {
           <input
             type="text"
             placeholder="Search by topic, author, company, jobs..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            value={inputValue}
+            onChange={handleSearchChange}
           />
-          <button 
+          <button
             type="button"
             className={`filter-btn ${filterActive ? 'active' : ''}`}
             onClick={() => setFilterActive(!filterActive)}

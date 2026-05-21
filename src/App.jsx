@@ -1,5 +1,5 @@
 import { API_BASE_URL } from './config';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import ProductivityWidgets from './components/ProductivityWidgets';
@@ -33,6 +33,7 @@ function App() {
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [authorQuery, setAuthorQuery] = useState('');
   const [completionFilter, setCompletionFilter] = useState('all'); // 'all' | 'completed' | 'partial'
   const [dateRangeFilter, setDateRangeFilter] = useState('all'); // 'all' | 'today' | 'week'
@@ -42,6 +43,11 @@ function App() {
   const [analyticsTrends, setAnalyticsTrends] = useState({});
   const [analyticsInsights, setAnalyticsInsights] = useState([]);
   const [analyticsRange, setAnalyticsRange] = useState('week');
+  const previousAnalyticsRefresh = useRef({
+    activeTab,
+    analyticsRange,
+    isLoggedIn
+  });
 
   // Privacy Settings State
   const [privacySettings, setPrivacySettings] = useState({
@@ -50,7 +56,7 @@ function App() {
     auto_delete_days: 30
   });
 
-  const fetchHistorySettings = async () => {
+  const fetchHistorySettings = useCallback(async () => {
     const token = localStorage.getItem('token');
     if (!token) return;
     try {
@@ -62,9 +68,9 @@ function App() {
     } catch (e) {
       console.error("Failed to load settings", e);
     }
-  };
+  }, []);
 
-  const fetchAnalytics = async (range = analyticsRange) => {
+  const fetchAnalytics = useCallback(async (range = 'week') => {
     const token = localStorage.getItem('token');
     if (!token) return;
     try {
@@ -85,7 +91,15 @@ function App() {
     } catch (e) {
       console.error("Failed to load analytics", e);
     }
-  };
+  }, []);
+
+  // Debounce search query
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 400);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
 
   useEffect(() => {
     const verifyToken = async () => {
@@ -104,9 +118,9 @@ function App() {
         if (response.ok) {
           setCurrentUser(data.user);
           setIsLoggedIn(true);
-          // Load settings and analytics on successful login
+          // Load settings on successful login. Analytics refreshes from the
+          // logged-in state effect below to avoid duplicate requests.
           fetchHistorySettings();
-          fetchAnalytics('week');
         } else {
           localStorage.removeItem('token');
         }
@@ -118,7 +132,7 @@ function App() {
     };
 
     verifyToken();
-  }, []);
+  }, [fetchHistorySettings]);
 
   // Establish WebSockets client connection for real-time feed, comments, and likes
   useEffect(() => {
@@ -138,6 +152,19 @@ function App() {
       }
     });
 
+    socketInstance.on('disconnect', (reason) => {
+      console.warn('[Socket.io] Disconnected from real-time server:', reason);
+    });
+
+    socketInstance.on('reconnect', (attemptNumber) => {
+      console.log('[Socket.io] Reconnected to backend real-time server on attempt', attemptNumber);
+      socketInstance.emit('join', currentUser.id);
+    });
+
+    socketInstance.on('connect_error', (error) => {
+      console.error('[Socket.io] Connection error:', error);
+    });
+
     socketInstance.on('post_created', (newPost) => {
       setPosts(prev => {
         if (prev.some(p => p.id === newPost.id)) return prev;
@@ -148,6 +175,7 @@ function App() {
     socketInstance.on('post_liked', ({ postId, likeCount, action, actorUserId }) => {
       setPosts(prev => prev.map(p => {
         if (Number(p.id) === Number(postId)) {
+          if (p.like_count === likeCount) return p;
           return { ...p, like_count: likeCount };
         }
         return p;
@@ -209,12 +237,15 @@ function App() {
       try {
         const token = localStorage.getItem('token');
         
-        let endpoint = `${API_BASE_URL}/api/posts?limit=10`;
-        if (activeTab === 'home' && privacySettings.filter_read_posts) {
-          endpoint = `${API_BASE_URL}/api/posts?limit=10&excludeViewed=true`;
+        let endpoint = `${API_BASE_URL}/api/feed`;
+        if (activeTab === 'home') {
+          const params = new URLSearchParams();
+          if (privacySettings.filter_read_posts) params.append('excludeViewed', 'true');
+          if (debouncedSearchQuery) params.append('q', debouncedSearchQuery);
+          if (params.toString()) endpoint = `${API_BASE_URL}/api/feed?${params.toString()}`;
         } else if (activeTab === 'history') {
           const params = new URLSearchParams();
-          if (searchQuery) params.append('q', searchQuery);
+          if (debouncedSearchQuery) params.append('q', debouncedSearchQuery);
           if (authorQuery) params.append('author', authorQuery);
           if (completionFilter !== 'all') params.append('completed', completionFilter === 'completed' ? 'true' : 'false');
           if (dateRangeFilter !== 'all') params.append('dateRange', dateRangeFilter);
@@ -241,7 +272,7 @@ function App() {
     };
 
     fetchContent();
-  }, [isLoggedIn, activeTab, searchQuery, authorQuery, completionFilter, dateRangeFilter, privacySettings.filter_read_posts]);
+  }, [isLoggedIn, activeTab, debouncedSearchQuery, authorQuery, completionFilter, dateRangeFilter, privacySettings.filter_read_posts]);
 
   // URL routing synchronization effect
   useEffect(() => {
@@ -259,8 +290,8 @@ function App() {
         setActiveTab('search');
       } else if (path === '/history') {
         setActiveTab('history');
-      } else {
-        setActiveTab('home');
+      } else if (path.startsWith('/post/')) {
+        setActiveTab('post');
       }
     };
 
@@ -283,6 +314,7 @@ function App() {
     else if (tab === 'notifications') path = '/notifications';
     else if (tab === 'history') path = '/history';
     else if (tab === 'search') path = window.location.pathname === '/search' ? `/search${window.location.search}` : '/search';
+    else if (tab === 'post') path = window.location.pathname; // preserve /post/:id
     
     if (window.location.pathname !== path) {
       window.history.pushState({}, '', path);
@@ -297,19 +329,24 @@ function App() {
     window.dispatchEvent(new Event('searchchange'));
   };
 
-  // Refresh analytics whenever the user navigates back to History or clears it
+  // Refresh analytics when login state, selected range, or History tab changes.
   useEffect(() => {
-    if (isLoggedIn && activeTab === 'history') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      fetchAnalytics(analyticsRange);
-    }
-  }, [activeTab, isLoggedIn, analyticsRange]);
+    const previous = previousAnalyticsRefresh.current;
+    const shouldRefresh =
+      isLoggedIn &&
+      (!previous.isLoggedIn ||
+        previous.analyticsRange !== analyticsRange ||
+        (activeTab === 'history' && previous.activeTab !== 'history'));
 
-  useEffect(() => {
-    if (!isLoggedIn) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    previousAnalyticsRefresh.current = {
+      activeTab,
+      analyticsRange,
+      isLoggedIn
+    };
+
+    if (!shouldRefresh) return;
     fetchAnalytics(analyticsRange);
-  }, [analyticsRange, isLoggedIn]);
+  }, [activeTab, analyticsRange, fetchAnalytics, isLoggedIn]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -327,7 +364,7 @@ function App() {
       window.clearTimeout(timeoutId);
       window.removeEventListener('history-view-tracked', handleHistoryViewTracked);
     };
-  }, [analyticsRange, isLoggedIn]);
+  }, [analyticsRange, fetchAnalytics, isLoggedIn]);
 
   if (isCheckingAuth) {
     return (
@@ -456,6 +493,8 @@ function App() {
           activeTab={activeTab}
           onOpenPrivacyModal={() => setIsPrivacyModalOpen(true)}
           onSearch={handleHeaderSearch}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
         />
 
         <div className="content-scrollable">
@@ -583,11 +622,33 @@ function App() {
                   ) : (
                     <div className="empty-state" style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-muted)' }}>
                       <i className="fa-solid fa-comment-slash" style={{ fontSize: '48px', marginBottom: '16px', color: '#cbd5e1' }}></i>
-                      <h3>Your feed is empty</h3>
-                      <p>Be the first to share a post!</p>
+                      <h3>No posts found</h3>
+                      <p>{debouncedSearchQuery ? 'Try adjusting your search query.' : 'Be the first to share a post!'}</p>
                     </div>
                   )
                 )}
+
+                {activeTab === 'post' && (() => {
+                  const postId = parseInt(window.location.pathname.split('/').pop());
+                  const post = posts.find(p => p.id === postId) || historyPosts.find(p => p.id === postId);
+                  return post ? (
+                    <div>
+                      <button onClick={() => handleTabChange('home')} style={{ marginBottom: '16px', background: 'transparent', border: 'none', color: 'var(--primary-blue)', cursor: 'pointer', fontWeight: '600' }}><i className="fa-solid fa-arrow-left"></i> Back to Feed</button>
+                      <PostCard 
+                        key={post.id} 
+                        {...post} 
+                        currentUser={currentUser}
+                        minVisibilityPct={privacySettings.min_visibility_pct}
+                        minDurationSeconds={privacySettings.min_duration_seconds}
+                      />
+                    </div>
+                  ) : (
+                    <div className="empty-state" style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-muted)' }}>
+                      <h3>Post not found</h3>
+                      <button onClick={() => handleTabChange('home')} style={{ marginTop: '16px', padding: '8px 16px', background: 'var(--primary-blue)', color: 'white', border: 'none', borderRadius: '20px', cursor: 'pointer' }}>Go Home</button>
+                    </div>
+                  );
+                })()}
 
                 {activeTab === 'history' && (
                   <>
