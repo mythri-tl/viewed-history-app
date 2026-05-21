@@ -18,6 +18,10 @@ class JobsController {
         salary_range || '',
         skills_required || ''
       );
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('job_created', job);
+      }
       res.status(201).json({ message: 'Job posting created successfully', job });
     } catch (error) {
       console.error('Error createJob:', error);
@@ -59,7 +63,9 @@ class JobsController {
       // Emit live socket alert to the user
       const io = req.app.get('io');
       if (io) {
-        io.emit(`notification-${userId}`, notification);
+        io.to(`user_${userId}`).emit(`notification-${userId}`, notification);
+        io.to(`user_${userId}`).emit('notification_received', notification);
+        io.emit('job_application_updated', { jobId: Number(job_id), userId });
       }
 
       res.status(200).json({ message: 'Application submitted successfully', result });

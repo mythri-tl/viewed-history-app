@@ -1,5 +1,5 @@
 import { API_BASE_URL } from './config';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import ProductivityWidgets from './components/ProductivityWidgets';
@@ -13,6 +13,7 @@ import ConnectionsView from './components/ConnectionsView';
 import JobsView from './components/JobsView';
 import MessagingView from './components/MessagingView';
 import NotificationsView from './components/NotificationsView';
+import SearchResults from './components/SearchResults';
 import { io } from 'socket.io-client';
 import './index.css';
 
@@ -24,11 +25,12 @@ function App() {
   const [socket, setSocket] = useState(null);
   const [selectedContact, setSelectedContact] = useState(null);
   
-  const [activeTab, setActiveTab] = useState('home'); // 'home' | 'history' | 'connections' | 'jobs' | 'messaging' | 'notifications'
+  const [activeTab, setActiveTab] = useState('home'); // 'home' | 'history' | 'connections' | 'jobs' | 'messaging' | 'notifications' | 'search'
   
   const [posts, setPosts] = useState([]);
   const [historyPosts, setHistoryPosts] = useState([]);
   const [loadingContent, setLoadingContent] = useState(false);
+  const postsRef = useRef(posts);
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState('');
@@ -41,6 +43,12 @@ function App() {
   const [analyticsTopics, setAnalyticsTopics] = useState([]);
   const [analyticsTrends, setAnalyticsTrends] = useState({});
   const [analyticsInsights, setAnalyticsInsights] = useState([]);
+  const [analyticsRange, setAnalyticsRange] = useState('week');
+  const previousAnalyticsRefresh = useRef({
+    activeTab,
+    analyticsRange,
+    isLoggedIn
+  });
 
   // Privacy Settings State
   const [privacySettings, setPrivacySettings] = useState({
@@ -49,7 +57,11 @@ function App() {
     auto_delete_days: 30
   });
 
-  const fetchHistorySettings = async () => {
+  useEffect(() => {
+    postsRef.current = posts;
+  }, [posts]);
+
+  const fetchHistorySettings = useCallback(async () => {
     const token = localStorage.getItem('token');
     if (!token) return;
     try {
@@ -61,16 +73,17 @@ function App() {
     } catch (e) {
       console.error("Failed to load settings", e);
     }
-  };
+  }, []);
 
-  const fetchAnalytics = async () => {
+  const fetchAnalytics = useCallback(async (range = 'week') => {
     const token = localStorage.getItem('token');
     if (!token) return;
     try {
+      const params = new URLSearchParams({ range });
       const [topicsRes, trendsRes, insightsRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/analytics/topics`, { headers: { 'Authorization': `Bearer ${token}` } }),
-        fetch(`${API_BASE_URL}/api/analytics/trends`, { headers: { 'Authorization': `Bearer ${token}` } }),
-        fetch(`${API_BASE_URL}/api/analytics/insights`, { headers: { 'Authorization': `Bearer ${token}` } })
+        fetch(`${API_BASE_URL}/api/analytics/topics?${params.toString()}`, { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch(`${API_BASE_URL}/api/analytics/trends?${params.toString()}`, { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch(`${API_BASE_URL}/api/analytics/insights?${params.toString()}`, { headers: { 'Authorization': `Bearer ${token}` } })
       ]);
       const [topicsData, trendsData, insightsData] = await Promise.all([
         topicsRes.json(),
@@ -83,7 +96,65 @@ function App() {
     } catch (e) {
       console.error("Failed to load analytics", e);
     }
-  };
+  }, []);
+
+  const getHistoryEndpoint = useCallback(() => {
+    const params = new URLSearchParams();
+    if (debouncedSearchQuery) params.append('q', debouncedSearchQuery);
+    if (authorQuery) params.append('author', authorQuery);
+    if (completionFilter !== 'all') params.append('completed', completionFilter === 'completed' ? 'true' : 'false');
+    if (dateRangeFilter !== 'all') params.append('dateRange', dateRangeFilter);
+    return `${API_BASE_URL}/api/history?${params.toString()}`;
+  }, [authorQuery, completionFilter, dateRangeFilter, debouncedSearchQuery]);
+
+  const fetchHistoryPosts = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    const res = await fetch(getHistoryEndpoint(), {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      setHistoryPosts(data.history || []);
+    }
+  }, [getHistoryEndpoint]);
+
+  const mergeHistoryView = useCallback((payload = {}) => {
+    const historyItem = payload.historyItem;
+    const postId = Number(payload.postId || payload.post_id || historyItem?.id || historyItem?.post_id);
+    if (!postId) return;
+
+    const viewedAt = payload.viewedAt || payload.viewed_at || historyItem?.viewed_at || new Date().toISOString();
+
+    setHistoryPosts(prev => {
+      const existing = prev.find(post => Number(post.id) === postId || Number(post.post_id) === postId);
+      const feedPost = postsRef.current.find(post => Number(post.id) === postId);
+      const basePost = historyItem || existing || feedPost;
+
+      if (!basePost) return prev;
+
+      const incomingTotalDuration = historyItem?.duration_seconds;
+      const durationSeconds = incomingTotalDuration ?? (
+        Number(existing?.duration_seconds || 0) + Number(payload.duration_seconds || 0)
+      );
+      const completed = Boolean(historyItem?.completed ?? existing?.completed ?? payload.completed);
+
+      const mergedPost = {
+        ...feedPost,
+        ...existing,
+        ...historyItem,
+        id: Number((historyItem || existing || feedPost).id || postId),
+        viewed_at: viewedAt,
+        duration_seconds: durationSeconds,
+        completed
+      };
+
+      const remainingPosts = prev.filter(post => Number(post.id) !== postId && Number(post.post_id) !== postId);
+      return [mergedPost, ...remainingPosts];
+    });
+  }, []);
 
   // Debounce search query
   useEffect(() => {
@@ -110,9 +181,9 @@ function App() {
         if (response.ok) {
           setCurrentUser(data.user);
           setIsLoggedIn(true);
-          // Load settings and analytics on successful login
+          // Load settings on successful login. Analytics refreshes from the
+          // logged-in state effect below to avoid duplicate requests.
           fetchHistorySettings();
-          fetchAnalytics();
         } else {
           localStorage.removeItem('token');
         }
@@ -124,19 +195,24 @@ function App() {
     };
 
     verifyToken();
-  }, []);
+  }, [fetchHistorySettings]);
 
   // Establish WebSockets client connection for real-time feed, comments, and likes
   useEffect(() => {
     if (!isLoggedIn || !currentUser) return;
 
-    const socketInstance = io(API_BASE_URL);
+    const token = localStorage.getItem('token');
+    const socketInstance = io(API_BASE_URL || undefined, {
+      auth: { token }
+    });
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSocket(socketInstance);
 
     socketInstance.on('connect', () => {
       console.log('[Socket.io] Connected to backend real-time server');
-      socketInstance.emit('join', currentUser.id);
+      if (currentUser.id) {
+        socketInstance.emit('join', currentUser.id);
+      }
     });
 
     socketInstance.on('disconnect', (reason) => {
@@ -159,15 +235,21 @@ function App() {
       });
     });
 
-    socketInstance.on('post_liked', ({ postId, likeCount, action }) => {
+    socketInstance.on('post_liked', ({ postId, likeCount, action, actorUserId }) => {
       setPosts(prev => prev.map(p => {
-        if (p.id === postId && p.like_count !== likeCount) {
+        if (Number(p.id) === Number(postId)) {
+          if (p.like_count === likeCount) return p;
           return { ...p, like_count: likeCount };
         }
         return p;
       }));
+      setHistoryPosts(prev => prev.map(p => (
+        Number(p.id) === Number(postId) ? { ...p, like_count: likeCount } : p
+      )));
       // Dispatch global window event to update individual card like states if desired
-      window.dispatchEvent(new CustomEvent(`post-like-update-${postId}`, { detail: { likeCount, action } }));
+      window.dispatchEvent(new CustomEvent(`post-like-update-${postId}`, {
+        detail: { likeCount, action, actorUserId }
+      }));
     });
 
     socketInstance.on('comment_created', ({ postId, comment, commentCount }) => {
@@ -181,6 +263,16 @@ function App() {
       window.dispatchEvent(new CustomEvent(`new-comment-${postId}`, { detail: comment }));
     });
 
+    socketInstance.on('comment_updated', ({ postId, comment, commentCount }) => {
+      setPosts(prev => prev.map(p => p.id === postId ? { ...p, comment_count: commentCount } : p));
+      window.dispatchEvent(new CustomEvent(`comment-update-${postId}`, { detail: comment }));
+    });
+
+    socketInstance.on('comment_deleted', ({ postId, commentId, commentCount }) => {
+      setPosts(prev => prev.map(p => p.id === postId ? { ...p, comment_count: commentCount } : p));
+      window.dispatchEvent(new CustomEvent(`comment-delete-${postId}`, { detail: { commentId } }));
+    });
+
     socketInstance.on('post_updated', (updatedPost) => {
       setPosts(prev => prev.map(p => p.id === updatedPost.id ? { ...p, ...updatedPost } : p));
       setHistoryPosts(prev => prev.map(p => p.id === updatedPost.id ? { ...p, ...updatedPost } : p));
@@ -188,28 +280,28 @@ function App() {
     });
 
     socketInstance.on('post_deleted', ({ postId }) => {
-      setPosts(prev => prev.filter(p => p.id !== postId));
-      setHistoryPosts(prev => prev.filter(p => p.id !== postId));
+      setPosts(prev => prev.filter(p => Number(p.id) !== Number(postId)));
+      setHistoryPosts(prev => prev.filter(p => Number(p.id) !== Number(postId)));
     });
 
-    socketInstance.on('comment_deleted', ({ postId, commentId, commentCount }) => {
-      setPosts(prev => prev.map(p => p.id === postId ? { ...p, comment_count: commentCount } : p));
-      window.dispatchEvent(new CustomEvent(`delete-comment-${postId}`, { detail: commentId }));
-    });
+    const handleHistoryViewRecorded = (payload) => {
+      mergeHistoryView(payload);
+      window.dispatchEvent(new CustomEvent('history-view-tracked', { detail: payload }));
+    };
 
-    socketInstance.on('comment_updated', ({ postId, comment }) => {
-      window.dispatchEvent(new CustomEvent(`update-comment-${postId}`, { detail: comment }));
-    });
+    socketInstance.on('history_view_recorded', handleHistoryViewRecorded);
 
     return () => {
+      socketInstance.off('history_view_recorded', handleHistoryViewRecorded);
       socketInstance.disconnect();
       setSocket(null);
     };
-  }, [isLoggedIn, currentUser]);
+  }, [isLoggedIn, currentUser, mergeHistoryView]);
 
   // Fetch feed or history based on activeTab and filters
   useEffect(() => {
     if (!isLoggedIn) return;
+    if (activeTab !== 'home' && activeTab !== 'history') return;
     
     const fetchContent = async () => {
       setLoadingContent(true);
@@ -223,12 +315,7 @@ function App() {
           if (debouncedSearchQuery) params.append('q', debouncedSearchQuery);
           if (params.toString()) endpoint = `${API_BASE_URL}/api/feed?${params.toString()}`;
         } else if (activeTab === 'history') {
-          const params = new URLSearchParams();
-          if (debouncedSearchQuery) params.append('q', debouncedSearchQuery);
-          if (authorQuery) params.append('author', authorQuery);
-          if (completionFilter !== 'all') params.append('completed', completionFilter === 'completed' ? 'true' : 'false');
-          if (dateRangeFilter !== 'all') params.append('dateRange', dateRangeFilter);
-          endpoint = `${API_BASE_URL}/api/history?${params.toString()}`;
+          endpoint = getHistoryEndpoint();
         }
         
         const res = await fetch(endpoint, {
@@ -251,7 +338,7 @@ function App() {
     };
 
     fetchContent();
-  }, [isLoggedIn, activeTab, debouncedSearchQuery, authorQuery, completionFilter, dateRangeFilter, privacySettings.filter_read_posts]);
+  }, [isLoggedIn, activeTab, debouncedSearchQuery, authorQuery, completionFilter, dateRangeFilter, privacySettings.filter_read_posts, getHistoryEndpoint]);
 
   // URL routing synchronization effect
   useEffect(() => {
@@ -265,6 +352,8 @@ function App() {
         setActiveTab('messaging');
       } else if (path === '/notifications') {
         setActiveTab('notifications');
+      } else if (path === '/search') {
+        setActiveTab('search');
       } else if (path === '/history') {
         setActiveTab('history');
       } else if (path.startsWith('/post/')) {
@@ -290,6 +379,7 @@ function App() {
     else if (tab === 'messaging') path = '/messages';
     else if (tab === 'notifications') path = '/notifications';
     else if (tab === 'history') path = '/history';
+    else if (tab === 'search') path = window.location.pathname === '/search' ? `/search${window.location.search}` : '/search';
     else if (tab === 'post') path = window.location.pathname; // preserve /post/:id
     
     if (window.location.pathname !== path) {
@@ -297,13 +387,69 @@ function App() {
     }
   };
 
-  // Refresh analytics whenever the user navigates back to History or clears it
+  const handleHeaderSearch = (query) => {
+    const params = new URLSearchParams({ q: query, type: 'all' });
+    const path = `/search?${params.toString()}`;
+    setActiveTab('search');
+    window.history.pushState({}, '', path);
+    window.dispatchEvent(new Event('searchchange'));
+  };
+
+  // Refresh analytics when login state, selected range, or History tab changes.
   useEffect(() => {
-    if (isLoggedIn && activeTab === 'history') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      fetchAnalytics();
-    }
-  }, [activeTab, isLoggedIn]);
+    const previous = previousAnalyticsRefresh.current;
+    const shouldRefresh =
+      isLoggedIn &&
+      (!previous.isLoggedIn ||
+        previous.analyticsRange !== analyticsRange ||
+        (activeTab === 'history' && previous.activeTab !== 'history'));
+
+    previousAnalyticsRefresh.current = {
+      activeTab,
+      analyticsRange,
+      isLoggedIn
+    };
+
+    if (!shouldRefresh) return;
+    fetchAnalytics(analyticsRange);
+  }, [activeTab, analyticsRange, fetchAnalytics, isLoggedIn]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    let timeoutId = null;
+    const handleHistoryViewTracked = (event) => {
+      mergeHistoryView(event.detail);
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => {
+        fetchAnalytics(analyticsRange);
+      }, 6500);
+    };
+
+    window.addEventListener('history-view-tracked', handleHistoryViewTracked);
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener('history-view-tracked', handleHistoryViewTracked);
+    };
+  }, [analyticsRange, fetchAnalytics, isLoggedIn, mergeHistoryView]);
+
+  useEffect(() => {
+    if (!isLoggedIn || activeTab !== 'history') return;
+
+    const intervalId = window.setInterval(() => {
+      fetchHistoryPosts().catch(error => console.error('Failed to reconcile history:', error));
+    }, 45000);
+
+    const handleFocus = () => {
+      fetchHistoryPosts().catch(error => console.error('Failed to reconcile history:', error));
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [activeTab, fetchHistoryPosts, isLoggedIn]);
 
   if (isCheckingAuth) {
     return (
@@ -330,14 +476,19 @@ function App() {
       if (prev.some(p => p.id === newPost.id)) return prev;
       const postWithAuthor = {
         ...newPost,
-        author_name: currentUser.name,
-        author_image: currentUser.profile_image,
-        like_count: 0,
-        comment_count: 0,
-        created_at: new Date().toISOString()
+        author_name: newPost.author_name || currentUser.name,
+        author_image: newPost.author_image || currentUser.profile_image,
+        like_count: newPost.like_count || 0,
+        comment_count: newPost.comment_count || 0,
+        created_at: newPost.created_at || new Date().toISOString()
       };
       return [postWithAuthor, ...prev];
     });
+  };
+
+  const handlePostDeleted = (postId) => {
+    setPosts(prev => prev.filter(post => Number(post.id) !== Number(postId)));
+    setHistoryPosts(prev => prev.filter(post => Number(post.id) !== Number(postId)));
   };
 
   const handleUpdateSettings = async (newSettings) => {
@@ -423,9 +574,10 @@ function App() {
       />
 
       <main className="main-content">
-        <Header 
-          activeTab={activeTab} 
-          onOpenPrivacyModal={() => setIsPrivacyModalOpen(true)} 
+        <Header
+          activeTab={activeTab}
+          onOpenPrivacyModal={() => setIsPrivacyModalOpen(true)}
+          onSearch={handleHeaderSearch}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
         />
@@ -517,7 +669,7 @@ function App() {
                 )}
 
                 {activeTab === 'jobs' && (
-                  <JobsView />
+                  <JobsView socket={socket} />
                 )}
 
                 {activeTab === 'messaging' && (
@@ -532,6 +684,14 @@ function App() {
                   <NotificationsView socket={socket} />
                 )}
 
+                {activeTab === 'search' && (
+                  <SearchResults
+                    currentUser={currentUser}
+                    onTabChange={handleTabChange}
+                    onSelectContact={setSelectedContact}
+                  />
+                )}
+
                 {activeTab === 'home' && (
                   posts.length > 0 ? (
                     posts.map(post => (
@@ -539,6 +699,7 @@ function App() {
                         key={post.id} 
                         {...post} 
                         currentUser={currentUser}
+                        onDelete={handlePostDeleted}
                         minVisibilityPct={privacySettings.min_visibility_pct}
                         minDurationSeconds={privacySettings.min_duration_seconds}
                       />
@@ -585,6 +746,7 @@ function App() {
                             {...post} 
                             currentUser={currentUser}
                             inHistoryView={true} 
+                            onDelete={handlePostDeleted}
                             minVisibilityPct={privacySettings.min_visibility_pct}
                             minDurationSeconds={privacySettings.min_duration_seconds}
                           />
@@ -600,6 +762,7 @@ function App() {
                             {...post} 
                             currentUser={currentUser}
                             inHistoryView={true} 
+                            onDelete={handlePostDeleted}
                             minVisibilityPct={privacySettings.min_visibility_pct}
                             minDurationSeconds={privacySettings.min_duration_seconds}
                           />
@@ -615,6 +778,7 @@ function App() {
                             {...post} 
                             currentUser={currentUser}
                             inHistoryView={true} 
+                            onDelete={handlePostDeleted}
                             minVisibilityPct={privacySettings.min_visibility_pct}
                             minDurationSeconds={privacySettings.min_duration_seconds}
                           />
@@ -637,7 +801,13 @@ function App() {
       </main>
 
       <aside className="right-sidebar">
-        <InsightsPanel topics={analyticsTopics} trends={analyticsTrends} insights={analyticsInsights} />
+        <InsightsPanel
+          topics={analyticsTopics}
+          trends={analyticsTrends}
+          insights={analyticsInsights}
+          range={analyticsRange}
+          onRangeChange={setAnalyticsRange}
+        />
         <ArchitectureDiagram />
       </aside>
 

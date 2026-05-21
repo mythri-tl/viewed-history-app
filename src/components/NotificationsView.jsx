@@ -34,7 +34,7 @@ const NotificationsView = ({ socket }) => {
     if (!socket) return;
 
     const handleNewNotification = (notif) => {
-      setNotifications(prev => [notif, ...prev]);
+      setNotifications(prev => prev.some(n => n.id === notif.id) ? prev : [notif, ...prev]);
     };
 
     // Socket.io broadcasts are listened to globally
@@ -56,7 +56,7 @@ const NotificationsView = ({ socket }) => {
         body: JSON.stringify({ id })
       });
       if (res.ok) {
-        setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: 1 } : n));
+        setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
       }
     } catch (e) {
       console.error(e);
@@ -75,7 +75,7 @@ const NotificationsView = ({ socket }) => {
         body: JSON.stringify({ all: true })
       });
       if (res.ok) {
-        setNotifications(prev => prev.map(n => ({ ...n, is_read: 1 })));
+        setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
       }
     } catch (e) {
       console.error(e);
