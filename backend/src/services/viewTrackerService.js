@@ -34,6 +34,16 @@ class ViewTrackerService {
     }
   }
 
+  async flushView(userId, postId) {
+    const key = `${userId}-${postId}`;
+    const event = this.viewCache.get(key);
+    if (!event) return;
+
+    this.viewCache.delete(key);
+    await HistoryModel.bulkUpsert([event]);
+    console.log(`[ViewTrackerService] Flushed view event for user ${userId}, post ${postId}.`);
+  }
+
   // Bulk flush to Database transaction
   async flushBatch() {
     if (this.viewCache.size === 0) return;
@@ -44,7 +54,7 @@ class ViewTrackerService {
 
     try {
       await HistoryModel.bulkUpsert(batch);
-      console.log(`[ViewTrackerService] Flushed batch of ${batch.length} view events to SQLite.`);
+      console.log(`[ViewTrackerService] Flushed batch of ${batch.length} view events to PostgreSQL.`);
     } catch (err) {
       console.error(`[ViewTrackerService] Failed to flush batch:`, err);
     }

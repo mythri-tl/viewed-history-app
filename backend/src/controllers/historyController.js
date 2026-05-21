@@ -21,12 +21,28 @@ exports.markViewed = async (req, res) => {
     }
 
     viewTrackerService.trackView(userId, postId, duration_seconds, completed);
+    await viewTrackerService.flushView(userId, postId);
     
     // Invalidate caches so frontend sees fresh results instantly
     historyCacheService.invalidateUserCache(userId);
     analyticsCache.invalidate(userId);
 
-    res.status(200).json({ message: 'View tracked successfully' });
+    const historyItem = await HistoryModel.getHistoryItem(userId, postId);
+    const viewedAt = historyItem?.viewed_at || new Date().toISOString();
+    const payload = {
+      postId: Number(postId),
+      duration_seconds,
+      completed: completed ? true : false,
+      viewedAt,
+      historyItem
+    };
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user_${userId}`).emit('history_view_recorded', payload);
+    }
+
+    res.status(200).json({ message: 'View tracked successfully', ...payload });
   } catch (error) {
     console.error('History mark error:', error);
     res.status(500).json({ message: 'Server error marking history' });

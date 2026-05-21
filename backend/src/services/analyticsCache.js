@@ -1,15 +1,15 @@
 class AnalyticsCache {
   constructor() {
     this.cache = new Map(); // Key: userId-type, Value: { data, expiry }
-    this.TTL = 5 * 60 * 1000; // 5 minutes cache duration
+    this.TTL = 60 * 1000; // Short cache so insights stay fresh as views arrive.
   }
 
-  get(userId, type) {
-    const key = `${userId}-${type}`;
+  get(userId, type, range = 'week') {
+    const key = `${userId}-${type}-${range}`;
     if (this.cache.has(key)) {
       const entry = this.cache.get(key);
       if (Date.now() < entry.expiry) {
-        console.log(`[Analytics Cache Hit] Serving cached ${type} for user ${userId}`);
+        console.log(`[Analytics Cache Hit] Serving cached ${type}/${range} for user ${userId}`);
         return entry.data;
       }
       this.cache.delete(key);
@@ -17,8 +17,8 @@ class AnalyticsCache {
     return null;
   }
 
-  set(userId, type, data) {
-    const key = `${userId}-${type}`;
+  set(userId, type, data, range = 'week') {
+    const key = `${userId}-${type}-${range}`;
     this.cache.set(key, {
       data,
       expiry: Date.now() + this.TTL
@@ -27,9 +27,12 @@ class AnalyticsCache {
 
   invalidate(userId) {
     console.log(`[Analytics Cache Invalidation] Cleared cache for user ${userId}`);
-    this.cache.delete(`${userId}-topics`);
-    this.cache.delete(`${userId}-trends`);
-    this.cache.delete(`${userId}-insights`);
+    const prefix = `${userId}-`;
+    for (const key of this.cache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.cache.delete(key);
+      }
+    }
   }
 }
 
