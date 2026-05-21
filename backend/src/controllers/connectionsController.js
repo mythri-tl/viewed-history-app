@@ -39,7 +39,8 @@ class ConnectionsController {
       // Emit real-time notification via Socket.io if receiver is online
       const io = req.app.get('io');
       if (io) {
-        io.emit(`notification-${receiver_id}`, notification);
+        io.to(`user_${receiver_id}`).emit(`notification-${receiver_id}`, notification);
+        io.to(`user_${receiver_id}`).emit('notification_received', notification);
       }
 
       res.status(201).json({ message: 'Connection request sent successfully', connection });
@@ -75,7 +76,8 @@ class ConnectionsController {
       // Emit live socket alert
       const io = req.app.get('io');
       if (io) {
-        io.emit(`notification-${requester_id}`, notification);
+        io.to(`user_${requester_id}`).emit(`notification-${requester_id}`, notification);
+        io.to(`user_${requester_id}`).emit('notification_received', notification);
       }
 
       res.status(200).json({ message: 'Connection request accepted', result });

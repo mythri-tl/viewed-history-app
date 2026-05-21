@@ -4,6 +4,7 @@ import { useState, useRef } from 'react';
 const CreatePost = ({ onPostCreated }) => {
   const [content, setContent] = useState('');
   const [imageUrl, setImageUrl] = useState('');
+  const [selectedImage, setSelectedImage] = useState(null);
   const [hashtags, setHashtags] = useState('');
   const [isExpanded, setIsExpanded] = useState(false);
   const [showHashtagInput, setShowHashtagInput] = useState(false);
@@ -16,19 +17,25 @@ const CreatePost = ({ onPostCreated }) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    if (!file.type.startsWith('image/')) {
-      setErrorMsg('Please select a valid image file.');
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedTypes.includes(file.type)) {
+      setSelectedImage(null);
+      setImageUrl('');
+      setErrorMsg('Please select a JPG, PNG, or WEBP image.');
       return;
     }
 
     // Limit to 5MB file size for safety
     if (file.size > 5 * 1024 * 1024) {
+      setSelectedImage(null);
+      setImageUrl('');
       setErrorMsg('Image file size must be less than 5MB.');
       return;
     }
 
     const reader = new FileReader();
     reader.onloadend = () => {
+      setSelectedImage(file);
       setImageUrl(reader.result);
       setErrorMsg('');
     };
@@ -40,6 +47,7 @@ const CreatePost = ({ onPostCreated }) => {
 
   const handleClearImage = () => {
     setImageUrl('');
+    setSelectedImage(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -53,15 +61,18 @@ const CreatePost = ({ onPostCreated }) => {
     setErrorMsg('');
 
     const token = localStorage.getItem('token');
+    const formData = new FormData();
+    formData.append('content', content.trim());
+    if (hashtags.trim()) formData.append('hashtags', hashtags.trim());
+    if (selectedImage) formData.append('image', selectedImage);
     
     try {
-      const response = await fetch(`${API_BASE_URL}/api/posts`, {
+      const response = await fetch(`${API_BASE_URL}/api/posts/create`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ content, imageUrl, hashtags })
+        body: formData
       });
 
       const data = await response.json();
@@ -97,7 +108,7 @@ const CreatePost = ({ onPostCreated }) => {
           type="file" 
           ref={fileInputRef} 
           onChange={handleFileChange} 
-          accept="image/*" 
+          accept="image/jpeg,image/png,image/webp" 
           style={{ display: 'none' }} 
         />
 

@@ -44,7 +44,7 @@ class ViewTrackerService {
 
     try {
       await HistoryModel.bulkUpsert(batch);
-      console.log(`[ViewTrackerService] Flushed batch of ${batch.length} view events to SQLite.`);
+      console.log(`[ViewTrackerService] Flushed batch of ${batch.length} view events to PostgreSQL.`);
     } catch (err) {
       console.error(`[ViewTrackerService] Failed to flush batch:`, err);
     }

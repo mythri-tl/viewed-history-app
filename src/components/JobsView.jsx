@@ -2,7 +2,7 @@ import { API_BASE_URL } from '../config';
 import { useState, useEffect } from 'react';
 import JobCard from './JobCard';
 
-const JobsView = () => {
+const JobsView = ({ socket }) => {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState(null);
@@ -38,6 +38,29 @@ const JobsView = () => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchJobs();
   }, []);
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleJobCreated = (job) => {
+      setJobs(prev => prev.some(existingJob => existingJob.id === job.id) ? prev : [job, ...prev]);
+    };
+
+    const handleJobApplicationUpdated = ({ jobId }) => {
+      setJobs(prev => prev.map(job => (
+        job.id === jobId
+          ? { ...job, applicant_count: (job.applicant_count || 0) + 1 }
+          : job
+      )));
+    };
+
+    socket.on('job_created', handleJobCreated);
+    socket.on('job_application_updated', handleJobApplicationUpdated);
+    return () => {
+      socket.off('job_created', handleJobCreated);
+      socket.off('job_application_updated', handleJobApplicationUpdated);
+    };
+  }, [socket]);
 
   const handleApply = async (jobId) => {
     const token = localStorage.getItem('token');
