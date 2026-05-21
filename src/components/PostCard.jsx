@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "../config";
+import { API_BASE_URL, resolveApiAssetUrl } from "../config";
 import { useState, useEffect, useRef } from "react";
 
 const PostCard = ({
@@ -47,28 +47,6 @@ const PostCard = ({
   const [savingEdit, setSavingEdit] = useState(false);
 
   const fileInputRef = useRef(null);
-
-  const resolveImageUrl = (url) => {
-    if (!url || !url.trim()) return "";
-
-    const normalizedUrl = url.trim();
-    if (normalizedUrl.startsWith("data:image/")) return normalizedUrl;
-    if (normalizedUrl.startsWith("/uploads/"))
-      return `${API_BASE_URL}${normalizedUrl}`;
-    if (normalizedUrl.startsWith("uploads/"))
-      return `${API_BASE_URL}/${normalizedUrl}`;
-
-    try {
-      const parsedUrl = new URL(normalizedUrl);
-      if (parsedUrl.pathname.startsWith("/uploads/")) {
-        return `${API_BASE_URL}${parsedUrl.pathname}`;
-      }
-    } catch {
-      return normalizedUrl;
-    }
-
-    return normalizedUrl;
-  };
 
   // Sync state values with props when they are updated in real-time by parent WS
   const [prevProps, setPrevProps] = useState({
@@ -520,8 +498,8 @@ const PostCard = ({
 
   // Format date loosely
   const dateStr = new Date(created_at).toLocaleDateString();
-  const mediaUrl = resolveImageUrl(image_url);
-  const editPreviewUrl = resolveImageUrl(editImageUrl);
+  const mediaUrl = resolveApiAssetUrl(image_url);
+  const editPreviewUrl = resolveApiAssetUrl(editImageUrl);
   const mediaLoadFailed = failedMediaUrl === mediaUrl;
 
   // If in Edit Mode, render inline editor instead of regular card content

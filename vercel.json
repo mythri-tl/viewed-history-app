@@ -9,6 +9,10 @@
       "destination": "https://viewed-history-app-production.up.railway.app/socket.io/:path*"
     },
     {
+      "source": "/uploads/:path*",
+      "destination": "https://viewed-history-app-production.up.railway.app/uploads/:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
