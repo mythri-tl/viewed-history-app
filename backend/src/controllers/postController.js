@@ -5,6 +5,12 @@ const PostModel = require('../models/postModel');
 const UserModel = require('../models/userModel');
 const NotificationsModel = require('../models/notificationsModel');
 
+const hasCloudinaryConfig = Boolean(
+  process.env.CLOUDINARY_CLOUD_NAME &&
+  process.env.CLOUDINARY_API_KEY &&
+  process.env.CLOUDINARY_API_SECRET
+);
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -25,6 +31,18 @@ async function uploadBase64Image(base64Str) {
   const ext = matches[1].toLowerCase();
   if (!['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
     throw new Error('Unsupported image format');
+  }
+
+  if (!hasCloudinaryConfig) {
+    const uploadsDir = path.join(__dirname, '../../uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+    const filename = `${Date.now()}-${Math.round(Math.random() * 1e9)}.${ext === 'jpeg' ? 'jpg' : ext}`;
+    const filePath = path.join(uploadsDir, filename);
+    fs.writeFileSync(filePath, Buffer.from(matches[2], 'base64'));
+    return `/uploads/${filename}`;
   }
 
   const uploadResult = await cloudinary.uploader.upload(base64Str, {
@@ -84,7 +102,7 @@ exports.createPost = async (req, res) => {
     hashtags = hashtags ? hashtags.trim() : null;
 
     if (req.file) {
-      imageUrl = req.file.path;
+      imageUrl = hasCloudinaryConfig ? req.file.path : `/uploads/${req.file.filename}`;
     }
 
     // Convert base64 media upload to hosted Cloudinary URL if applicable.

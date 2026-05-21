@@ -1,6 +1,14 @@
 const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const { v2: cloudinary } = require('cloudinary');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
+
+const hasCloudinaryConfig = Boolean(
+  process.env.CLOUDINARY_CLOUD_NAME &&
+  process.env.CLOUDINARY_API_KEY &&
+  process.env.CLOUDINARY_API_SECRET
+);
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -10,14 +18,27 @@ cloudinary.config({
 
 const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
-const storage = new CloudinaryStorage({
-  cloudinary,
-  params: {
-    folder: 'viewed-history/posts',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
-    resource_type: 'image'
-  }
-});
+const uploadsDir = path.join(__dirname, '../../uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+const storage = hasCloudinaryConfig
+  ? new CloudinaryStorage({
+      cloudinary,
+      params: {
+        folder: 'viewed-history/posts',
+        allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+        resource_type: 'image'
+      }
+    })
+  : multer.diskStorage({
+      destination: (req, file, cb) => cb(null, uploadsDir),
+      filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+        cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
+      }
+    });
 
 const upload = multer({
   storage,

@@ -30,6 +30,7 @@ function App() {
   const [posts, setPosts] = useState([]);
   const [historyPosts, setHistoryPosts] = useState([]);
   const [loadingContent, setLoadingContent] = useState(false);
+  const postsRef = useRef(posts);
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState('');
@@ -55,6 +56,10 @@ function App() {
     private_mode: false,
     auto_delete_days: 30
   });
+
+  useEffect(() => {
+    postsRef.current = posts;
+  }, [posts]);
 
   const fetchHistorySettings = useCallback(async () => {
     const token = localStorage.getItem('token');
@@ -91,6 +96,64 @@ function App() {
     } catch (e) {
       console.error("Failed to load analytics", e);
     }
+  }, []);
+
+  const getHistoryEndpoint = useCallback(() => {
+    const params = new URLSearchParams();
+    if (debouncedSearchQuery) params.append('q', debouncedSearchQuery);
+    if (authorQuery) params.append('author', authorQuery);
+    if (completionFilter !== 'all') params.append('completed', completionFilter === 'completed' ? 'true' : 'false');
+    if (dateRangeFilter !== 'all') params.append('dateRange', dateRangeFilter);
+    return `${API_BASE_URL}/api/history?${params.toString()}`;
+  }, [authorQuery, completionFilter, dateRangeFilter, debouncedSearchQuery]);
+
+  const fetchHistoryPosts = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    const res = await fetch(getHistoryEndpoint(), {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      setHistoryPosts(data.history || []);
+    }
+  }, [getHistoryEndpoint]);
+
+  const mergeHistoryView = useCallback((payload = {}) => {
+    const historyItem = payload.historyItem;
+    const postId = Number(payload.postId || payload.post_id || historyItem?.id || historyItem?.post_id);
+    if (!postId) return;
+
+    const viewedAt = payload.viewedAt || payload.viewed_at || historyItem?.viewed_at || new Date().toISOString();
+
+    setHistoryPosts(prev => {
+      const existing = prev.find(post => Number(post.id) === postId || Number(post.post_id) === postId);
+      const feedPost = postsRef.current.find(post => Number(post.id) === postId);
+      const basePost = historyItem || existing || feedPost;
+
+      if (!basePost) return prev;
+
+      const incomingTotalDuration = historyItem?.duration_seconds;
+      const durationSeconds = incomingTotalDuration ?? (
+        Number(existing?.duration_seconds || 0) + Number(payload.duration_seconds || 0)
+      );
+      const completed = Boolean(historyItem?.completed ?? existing?.completed ?? payload.completed);
+
+      const mergedPost = {
+        ...feedPost,
+        ...existing,
+        ...historyItem,
+        id: Number((historyItem || existing || feedPost).id || postId),
+        viewed_at: viewedAt,
+        duration_seconds: durationSeconds,
+        completed
+      };
+
+      const remainingPosts = prev.filter(post => Number(post.id) !== postId && Number(post.post_id) !== postId);
+      return [mergedPost, ...remainingPosts];
+    });
   }, []);
 
   // Debounce search query
@@ -221,11 +284,19 @@ function App() {
       setHistoryPosts(prev => prev.filter(p => Number(p.id) !== Number(postId)));
     });
 
+    const handleHistoryViewRecorded = (payload) => {
+      mergeHistoryView(payload);
+      window.dispatchEvent(new CustomEvent('history-view-tracked', { detail: payload }));
+    };
+
+    socketInstance.on('history_view_recorded', handleHistoryViewRecorded);
+
     return () => {
+      socketInstance.off('history_view_recorded', handleHistoryViewRecorded);
       socketInstance.disconnect();
       setSocket(null);
     };
-  }, [isLoggedIn, currentUser]);
+  }, [isLoggedIn, currentUser, mergeHistoryView]);
 
   // Fetch feed or history based on activeTab and filters
   useEffect(() => {
@@ -244,12 +315,7 @@ function App() {
           if (debouncedSearchQuery) params.append('q', debouncedSearchQuery);
           if (params.toString()) endpoint = `${API_BASE_URL}/api/feed?${params.toString()}`;
         } else if (activeTab === 'history') {
-          const params = new URLSearchParams();
-          if (debouncedSearchQuery) params.append('q', debouncedSearchQuery);
-          if (authorQuery) params.append('author', authorQuery);
-          if (completionFilter !== 'all') params.append('completed', completionFilter === 'completed' ? 'true' : 'false');
-          if (dateRangeFilter !== 'all') params.append('dateRange', dateRangeFilter);
-          endpoint = `${API_BASE_URL}/api/history?${params.toString()}`;
+          endpoint = getHistoryEndpoint();
         }
         
         const res = await fetch(endpoint, {
@@ -272,7 +338,7 @@ function App() {
     };
 
     fetchContent();
-  }, [isLoggedIn, activeTab, debouncedSearchQuery, authorQuery, completionFilter, dateRangeFilter, privacySettings.filter_read_posts]);
+  }, [isLoggedIn, activeTab, debouncedSearchQuery, authorQuery, completionFilter, dateRangeFilter, privacySettings.filter_read_posts, getHistoryEndpoint]);
 
   // URL routing synchronization effect
   useEffect(() => {
@@ -352,7 +418,8 @@ function App() {
     if (!isLoggedIn) return;
 
     let timeoutId = null;
-    const handleHistoryViewTracked = () => {
+    const handleHistoryViewTracked = (event) => {
+      mergeHistoryView(event.detail);
       window.clearTimeout(timeoutId);
       timeoutId = window.setTimeout(() => {
         fetchAnalytics(analyticsRange);
@@ -364,7 +431,25 @@ function App() {
       window.clearTimeout(timeoutId);
       window.removeEventListener('history-view-tracked', handleHistoryViewTracked);
     };
-  }, [analyticsRange, fetchAnalytics, isLoggedIn]);
+  }, [analyticsRange, fetchAnalytics, isLoggedIn, mergeHistoryView]);
+
+  useEffect(() => {
+    if (!isLoggedIn || activeTab !== 'history') return;
+
+    const intervalId = window.setInterval(() => {
+      fetchHistoryPosts().catch(error => console.error('Failed to reconcile history:', error));
+    }, 45000);
+
+    const handleFocus = () => {
+      fetchHistoryPosts().catch(error => console.error('Failed to reconcile history:', error));
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [activeTab, fetchHistoryPosts, isLoggedIn]);
 
   if (isCheckingAuth) {
     return (

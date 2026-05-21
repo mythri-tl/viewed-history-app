@@ -88,6 +88,27 @@ class HistoryModel {
     return rows;
   }
 
+  static async getHistoryItem(userId, postId) {
+    const sql = `
+      SELECT 
+        p.*,
+        u.name as author_name,
+        u.profile_image as author_image,
+        vh.viewed_at,
+        vh.duration_seconds,
+        vh.completed,
+        vh.resumed_count,
+        (SELECT COUNT(*)::integer FROM likes WHERE post_id = p.id) as like_count,
+        (SELECT COUNT(*)::integer FROM comments WHERE post_id = p.id) as comment_count
+      FROM viewed_history vh
+      JOIN posts p ON vh.post_id = p.id
+      JOIN users u ON p.user_id = u.id
+      WHERE vh.user_id = $1 AND vh.post_id = $2
+    `;
+    const { rows } = await query(sql, [userId, postId]);
+    return rows[0];
+  }
+
   static async getSettings(userId) {
     const sql = `SELECT * FROM user_history_settings WHERE user_id = $1`;
     const { rows } = await query(sql, [userId]);
